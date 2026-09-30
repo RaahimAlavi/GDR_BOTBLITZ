@@ -26,7 +26,7 @@ export default {
       },
       fontFamily: {
         mono: ['JetBrains Mono', 'Fira Code', 'Courier New', 'monospace'],
-        display: ['Orbitron', 'Rajdhani', 'Impact', 'sans-serif'],
+        display: ['Outfit', 'Arial', 'sans-serif'],
       },
       boxShadow: {
         'neon-cyan': '0 0 15px rgba(0, 240, 255, 0.5), 0 0 30px rgba(0, 240, 255, 0.2)',

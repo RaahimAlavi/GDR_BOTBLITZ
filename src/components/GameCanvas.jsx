@@ -1,87 +1,33 @@
-import React, { useRef, useEffect, useState, useCallback } from 'react';
+import { useRef, useEffect, useState } from 'react';
+import { RotateCw } from 'lucide-react';
 import { GameEngine } from '../lib/gameEngine';
+import { enterGameFullscreen, leaveGameFullscreen } from '../lib/fullscreen';
 import GameHUD from './GameHUD';
-
-export default function GameCanvas({ session, onGameOver }) {
+import PowerUpIndicator from './PowerUpIndicator';
+export default function GameCanvas({session, onGameOver, onExit}) {
   const canvasRef = useRef(null);
-  const engineRef = useRef(null);
-
-  // HUD state updated from game engine
-  const [hudState, setHudState] = useState({
-    score: 0,
-    timeRemaining: 60,
-    combo: 1,
-    comboProgress: 0,
-    activePowerUp: null,
-    isOverload: false,
-  });
-
-  const handleHUDUpdate = useCallback((update) => {
-    setHudState((prev) => ({
-      ...prev,
-      ...update,
-    }));
-  }, []);
-
+  const [fullscreen, setFullscreen] = useState(Boolean(document.fullscreenElement));
+  const [hud, setHud] = useState({score:0, timeRemaining:60, lives:3, combo:1, comboProgress:0, activePowerUp:null, isOverload:false, ready:3});
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    // Prevent iOS rubber-banding and accidental scrolling
-    const preventDefaultTouch = (e) => {
-      if (e.target === canvas) {
-        e.preventDefault();
-      }
-    };
-    document.body.addEventListener('touchmove', preventDefaultTouch, { passive: false });
-
-    // Initialize Game Engine
-    const engine = new GameEngine(canvas, {
-      session,
-      onHUDUpdate: handleHUDUpdate,
-      onGameOver,
-    });
-    engineRef.current = engine;
+    const engine = new GameEngine(canvas, {session, onHUDUpdate:setHud, onGameOver});
+    const resize = new ResizeObserver(() => engine.resize());
+    resize.observe(canvas);
     engine.start();
-
-    // Window resize handler
-    const handleResize = () => {
-      if (engineRef.current) {
-        engineRef.current.resize();
-      }
-    };
-    window.addEventListener('resize', handleResize);
-    window.addEventListener('orientationchange', handleResize);
-
-    return () => {
-      document.body.removeEventListener('touchmove', preventDefaultTouch);
-      window.removeEventListener('resize', handleResize);
-      window.removeEventListener('orientationchange', handleResize);
-      if (engineRef.current) {
-        engineRef.current.destroy();
-        engineRef.current = null;
-      }
-    };
-  }, [session, onGameOver, handleHUDUpdate]);
-
-  return (
-    <div className="relative w-full h-full overflow-hidden select-none touch-none bg-cyber-darker">
-      {/* Heads Up Display */}
-      <GameHUD
-        score={hudState.score}
-        timeRemaining={hudState.timeRemaining}
-        combo={hudState.combo}
-        comboProgress={hudState.comboProgress}
-        activePowerUp={hudState.activePowerUp}
-        isOverload={hudState.isOverload}
-      />
-
-      {/* HTML5 Game Canvas */}
-      <canvas
-        ref={canvasRef}
-        className="w-full h-full block cursor-crosshair touch-none"
-        style={{ touchAction: 'none' }}
-      />
+    return () => {resize.disconnect(); engine.destroy();};
+  }, [session, onGameOver]);
+  useEffect(() => {
+    const update = () => setFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener('fullscreenchange', update);
+    return () => document.removeEventListener('fullscreenchange', update);
+  }, []);
+  return <main className="game-screen">
+    <GameHUD {...hud} fullscreen={fullscreen} onFullscreen={fullscreen ? leaveGameFullscreen : enterGameFullscreen} onExit={onExit} />
+    <div className="arena-wrap">
+      <canvas ref={canvasRef} className="game-canvas" aria-label="BOT BLITZ arena. Drag to steer, or use WASD and arrow keys." />
+      {hud.ready > 0 && <div className="ready-overlay" aria-live="polite"><span>READY, PILOT?</span><strong key={hud.ready}>{hud.ready}</strong><p>Drag anywhere to steer</p></div>}
+      {hud.activePowerUp && <div className="powerup-anchor"><PowerUpIndicator activePowerUp={hud.activePowerUp} /></div>}
     </div>
-  );
+    <footer className="game-footer"><span>{hud.isOverload ? 'OVERLOAD · 50% MORE POINTS' : 'COLLECT ENERGY. KEEP MOVING.'}</span><span className="portrait-hint"><RotateCw size={13} /> Try landscape for more room</span><span className="desktop-hint">DRAG TO STEER · WASD / ↑ ↓ ← →</span></footer>
+  </main>;
 }

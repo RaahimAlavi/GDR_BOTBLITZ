@@ -3,8 +3,8 @@
  * Mobile-first touch controls, 60 FPS physics, hazard progression, power-ups, and particles
  */
 
-import { sound } from './soundFx';
-import { recordCollection, recordHazardHit } from './scoreValidation';
+import { sound } from './soundFx.js';
+import { recordCollection, recordHazardHit } from './scoreValidation.js';
 
 export class GameEngine {
   constructor(canvas, options = {}) {
@@ -18,8 +18,8 @@ export class GameEngine {
     this.session = options.session || null;
 
     // Viewport dimensions
-    this.width = canvas.width;
-    this.height = canvas.height;
+    this.width = 960;
+    this.height = 540;
     this.dpr = window.devicePixelRatio || 1;
 
     // Game state
@@ -29,6 +29,12 @@ export class GameEngine {
     this.totalElapsedTime = 0;
     this.lastFrameTime = performance.now();
     this.score = 0;
+    this.lives = 3;
+    this.ready = 3;
+    this.lastHUDTime = -Infinity;
+    this.lastHUDKey = '';
+    this.particleTimer = 0;
+    this.reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches || false;
 
     // Combo system
     this.combo = 1;
@@ -78,19 +84,26 @@ export class GameEngine {
       laser: 2.0,
       drone: 4.0,
       barrier: 5.0,
-      mine: 3.0,
+      mine: 0,
     };
 
     // 10s countdown tracking to play sound once per second
     this.lastCountdownSpoken = 11;
 
     // Bound handlers for cleanup
-    this.handleTouchStart = this.onTouchStart.bind(this);
-    this.handleTouchMove = this.onTouchMove.bind(this);
-    this.handleTouchEnd = this.onTouchEnd.bind(this);
-    this.handleMouseDown = this.onMouseDown.bind(this);
-    this.handleMouseMove = this.onMouseMove.bind(this);
-    this.handleMouseUp = this.onMouseUp.bind(this);
+    this.handlePointerDown = this.onPointerDown.bind(this);
+    this.handlePointerMove = this.onPointerMove.bind(this);
+    this.handlePointerUp = this.onPointerUp.bind(this);
+    this.boundLoop = this.loop.bind(this);
+    this.keys = new Set();
+    this.handleKeyDown = (event) => {
+      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'w', 'a', 's', 'd'].includes(event.key)) {
+        event.preventDefault();
+        this.keys.add(event.key);
+      }
+    };
+    this.handleKeyUp = (event) => this.keys.delete(event.key);
+    this.handleBlur = () => { this.keys.clear(); this.onPointerUp(); };
 
     this.isDragging = false;
 
@@ -100,48 +113,68 @@ export class GameEngine {
 
   resize() {
     const rect = this.canvas.getBoundingClientRect();
-    this.width = rect.width;
-    this.height = rect.height;
-
-    this.dpr = Math.min(window.devicePixelRatio || 1, 2.5); // cap at 2.5 for mobile battery efficiency
-    this.canvas.width = this.width * this.dpr;
-    this.canvas.height = this.height * this.dpr;
-
-    this.ctx.resetTransform?.();
-    this.ctx.scale(this.dpr, this.dpr);
+    if (!rect.width || !rect.height) return;
+    const oldWidth = this.width;
+    const oldHeight = this.height;
+    // Stable game units: larger devices don't make the robot artificially slower.
+    const landscape = rect.width > rect.height;
+    this.width = landscape ? 960 : 540;
+    this.height = landscape ? 540 : 800;
+    this.cssWidth = rect.width;
+    this.cssHeight = rect.height;
+    this.worldScale = Math.min(rect.width / this.width, rect.height / this.height);
+    this.offsetX = (rect.width - this.width * this.worldScale) / 2;
+    this.offsetY = (rect.height - this.height * this.worldScale) / 2;
+    this.dpr = Math.min(window.devicePixelRatio || 1, 2);
+    this.canvas.width = Math.round(rect.width * this.dpr);
+    this.canvas.height = Math.round(rect.height * this.dpr);
+    if (oldWidth !== this.width || oldHeight !== this.height) {
+      const sx = this.width / oldWidth;
+      const sy = this.height / oldHeight;
+      for (const entity of [this.player, ...this.collectibles, ...this.hazards, ...this.particles, ...this.floatingTexts]) {
+        for (const key of ['x', 'targetX', 'x1', 'x2']) if (Number.isFinite(entity[key])) entity[key] *= sx;
+        for (const key of ['y', 'targetY', 'y1', 'y2']) if (Number.isFinite(entity[key])) entity[key] *= sy;
+        if (entity.type === 'BARRIER') {
+          entity.length = Math.min(entity.length, (entity.isHorizontal ? this.width : this.height) - 40);
+          entity.x = Math.min(entity.x, this.width - (entity.isHorizontal ? entity.length : 20) - 15);
+          entity.y = Math.min(entity.y, this.height - (entity.isHorizontal ? 20 : entity.length) - 15);
+        }
+      }
+      this.onPointerUp();
+    }
+    if (!this.floorLayers || oldWidth !== this.width || oldHeight !== this.height) this.cacheArena();
   }
 
   initInput() {
     const el = this.canvas;
-    // Mobile Touch
-    el.addEventListener('touchstart', this.handleTouchStart, { passive: false });
-    el.addEventListener('touchmove', this.handleTouchMove, { passive: false });
-    el.addEventListener('touchend', this.handleTouchEnd, { passive: false });
-    el.addEventListener('touchcancel', this.handleTouchEnd, { passive: false });
-
-    // Desktop Mouse
-    el.addEventListener('mousedown', this.handleMouseDown);
-    window.addEventListener('mousemove', this.handleMouseMove);
-    window.addEventListener('mouseup', this.handleMouseUp);
+    el.addEventListener('pointerdown', this.handlePointerDown);
+    el.addEventListener('pointermove', this.handlePointerMove);
+    el.addEventListener('pointerup', this.handlePointerUp);
+    el.addEventListener('pointercancel', this.handlePointerUp);
+    el.addEventListener('lostpointercapture', this.handlePointerUp);
+    window.addEventListener('keydown', this.handleKeyDown);
+    window.addEventListener('keyup', this.handleKeyUp);
+    window.addEventListener('blur', this.handleBlur);
   }
 
   destroy() {
     this.isRunning = false;
+    cancelAnimationFrame(this.frameId);
     const el = this.canvas;
-    el.removeEventListener('touchstart', this.handleTouchStart);
-    el.removeEventListener('touchmove', this.handleTouchMove);
-    el.removeEventListener('touchend', this.handleTouchEnd);
-    el.removeEventListener('touchcancel', this.handleTouchEnd);
-
-    el.removeEventListener('mousedown', this.handleMouseDown);
-    window.removeEventListener('mousemove', this.handleMouseMove);
-    window.removeEventListener('mouseup', this.handleMouseUp);
+    el.removeEventListener('pointerdown', this.handlePointerDown);
+    el.removeEventListener('pointermove', this.handlePointerMove);
+    el.removeEventListener('pointerup', this.handlePointerUp);
+    el.removeEventListener('pointercancel', this.handlePointerUp);
+    el.removeEventListener('lostpointercapture', this.handlePointerUp);
+    window.removeEventListener('keydown', this.handleKeyDown);
+    window.removeEventListener('keyup', this.handleKeyUp);
+    window.removeEventListener('blur', this.handleBlur);
   }
 
   setInputTarget(rawX, rawY) {
     const rect = this.canvas.getBoundingClientRect();
-    const clientX = rawX - rect.left;
-    const clientY = rawY - rect.top;
+    const clientX = (rawX - rect.left - this.offsetX) / this.worldScale;
+    const clientY = (rawY - rect.top - this.offsetY) / this.worldScale;
 
     if (this.player.isMalfunctioning) {
       // Reverse player controls relative to player pos
@@ -155,44 +188,42 @@ export class GameEngine {
     }
   }
 
-  onTouchStart(e) {
+  onPointerDown(e) {
+    if (this.ready > 0 || this.pointerId != null || (e.pointerType === 'mouse' && e.button !== 0)) return;
     e.preventDefault();
     this.isDragging = true;
-    if (e.touches && e.touches[0]) {
-      this.setInputTarget(e.touches[0].clientX, e.touches[0].clientY);
+    this.pointerId = e.pointerId;
+    this.canvas.setPointerCapture?.(e.pointerId);
+    this.pointerX = e.clientX;
+    this.pointerY = e.clientY;
+    this.player.targetX = this.player.x;
+    this.player.targetY = this.player.y;
+  }
+
+  onPointerMove(e) {
+    if (this.isDragging && e.pointerId === this.pointerId) {
+      const direction = this.player.isMalfunctioning ? -1 : 1;
+      this.player.targetX = Math.max(25, Math.min(this.width - 25, this.player.targetX + direction * (e.clientX - this.pointerX) / this.worldScale));
+      this.player.targetY = Math.max(25, Math.min(this.height - 25, this.player.targetY + direction * (e.clientY - this.pointerY) / this.worldScale));
+      this.pointerX = e.clientX;
+      this.pointerY = e.clientY;
     }
   }
 
-  onTouchMove(e) {
-    e.preventDefault();
-    if (this.isDragging && e.touches && e.touches[0]) {
-      this.setInputTarget(e.touches[0].clientX, e.touches[0].clientY);
-    }
-  }
-
-  onTouchEnd(e) {
-    e.preventDefault();
+  onPointerUp(e) {
+    if (e && e.pointerId !== this.pointerId) return;
     this.isDragging = false;
-  }
-
-  onMouseDown(e) {
-    this.isDragging = true;
-    this.setInputTarget(e.clientX, e.clientY);
-  }
-
-  onMouseMove(e) {
-    if (this.isDragging) {
-      this.setInputTarget(e.clientX, e.clientY);
-    }
-  }
-
-  onMouseUp() {
-    this.isDragging = false;
+    this.pointerId = null;
+    this.player.targetX = this.player.x;
+    this.player.targetY = this.player.y;
   }
 
   start() {
     this.isRunning = true;
     this.lastFrameTime = performance.now();
+    this.matchStartsAt = this.lastFrameTime + 3000;
+    this.deadline = this.matchStartsAt + 60000;
+    if (this.session) this.session.startTime = Date.now() + 3000;
     this.player.x = this.width / 2;
     this.player.y = this.height / 2;
     this.player.targetX = this.width / 2;
@@ -204,35 +235,46 @@ export class GameEngine {
     }
     this.spawnCore();
 
-    requestAnimationFrame(this.loop.bind(this));
+    this.emitHUD(true);
+    this.frameId = requestAnimationFrame(this.boundLoop);
   }
 
   loop(currentTime) {
     if (!this.isRunning) return;
 
-    const dt = Math.min((currentTime - this.lastFrameTime) / 1000, 0.1); // clamp dt to max 100ms
+    const dt = Math.min((currentTime - this.lastFrameTime) / 1000, 1 / 30);
     this.lastFrameTime = currentTime;
-
-    if (!this.isPaused) {
+    this.ready = Math.max(0, Math.ceil((this.matchStartsAt - currentTime) / 1000));
+    if (this.ready === 0) {
+      // A backgrounded tab cannot extend the ranked run.
+      this.gameTimeRemaining = Math.max(0, (this.deadline - currentTime) / 1000);
+      if (this.gameTimeRemaining <= 0) { this.endGame('TIME'); return; }
       this.update(dt);
     }
+    if (!this.isRunning) return;
+    this.emitHUD();
     this.render();
-
-    if (this.gameTimeRemaining > 0) {
-      requestAnimationFrame(this.loop.bind(this));
-    } else {
-      this.endGame();
-    }
+    this.frameId = requestAnimationFrame(this.boundLoop);
   }
 
-  endGame() {
+  endGame(reason = 'TIME') {
+    if (!this.isRunning) return;
     this.isRunning = false;
+    cancelAnimationFrame(this.frameId);
     sound.playGameOver();
-
-    // Trigger Game Over with final stats
+    if (this.session) {
+      this.session.endTime = Date.now();
+      this.session.endReason = reason;
+      this.session.isCompleted = true;
+    }
+    this.emitHUD(true);
     this.onGameOver({
       score: this.score,
-      duration: Math.round(60 - this.gameTimeRemaining),
+      duration: Math.min(60, Math.max(0, (Date.now() - this.session?.startTime) / 1000)),
+      reason,
+      lives: this.lives,
+      bestCombo: this.session?.bestCombo || 1,
+      collected: this.session?.collected || 0,
       session: this.session,
     });
   }
@@ -241,8 +283,7 @@ export class GameEngine {
   // UPDATES & GAMEPLAY LOGIC
   // ==========================================
   update(dt) {
-    this.gameTimeRemaining = Math.max(0, this.gameTimeRemaining - dt);
-    this.totalElapsedTime += dt;
+    this.totalElapsedTime = 60 - this.gameTimeRemaining;
     const elapsed = 60.0 - this.gameTimeRemaining;
 
     // 10-Second Dramatic Countdown Audio
@@ -313,8 +354,18 @@ export class GameEngine {
     this.checkCollisions();
 
     // Push HUD updates (score, combo, time, active power-up)
+  }
+
+  emitHUD(force = false) {
+    const key = `${this.score}:${Math.ceil(this.gameTimeRemaining)}:${this.lives}:${this.combo}:${this.activePowerUp?.type || ''}:${this.ready}:${this.systemOverloadActive}`;
+    const now = performance.now();
+    if (!force && key === this.lastHUDKey && now - this.lastHUDTime < 80) return;
+    this.lastHUDKey = key;
+    this.lastHUDTime = now;
     this.onHUDUpdate({
       score: this.score,
+      lives: this.lives,
+      ready: this.ready,
       timeRemaining: Math.ceil(this.gameTimeRemaining),
       combo: this.combo,
       comboProgress: this.combo > 1 ? this.comboTimer / this.maxComboTime : 0,
@@ -329,6 +380,16 @@ export class GameEngine {
 
   updatePlayer(dt) {
     const p = this.player;
+    let keyX = Number(this.keys.has('ArrowRight') || this.keys.has('d')) - Number(this.keys.has('ArrowLeft') || this.keys.has('a'));
+    let keyY = Number(this.keys.has('ArrowDown') || this.keys.has('s')) - Number(this.keys.has('ArrowUp') || this.keys.has('w'));
+    if (keyX || keyY) {
+      const length = Math.hypot(keyX, keyY);
+      const direction = p.isMalfunctioning ? -1 : 1;
+      keyX = keyX / length * direction;
+      keyY = keyY / length * direction;
+      p.targetX = Math.max(25, Math.min(this.width - 25, p.x + keyX * p.speed * dt));
+      p.targetY = Math.max(25, Math.min(this.height - 25, p.y + keyY * p.speed * dt));
+    }
 
     // Invulnerability and Stun cooldowns
     if (p.isInvulnerable) {
@@ -367,14 +428,16 @@ export class GameEngine {
       p.angle += angleDiff * Math.min(1, dt * 16);
 
       // Move toward target
-      const moveStep = Math.min(dist, currentSpeed * dt * Math.min(3, dist / 20));
+      const moveStep = Math.min(dist, currentSpeed * dt);
       p.vx = (dx / dist) * moveStep;
       p.vy = (dy / dist) * moveStep;
       p.x += p.vx;
       p.y += p.vy;
 
       // Spawn thruster jet particles
-      if (Math.random() < 0.8) {
+      this.particleTimer += dt;
+      if (!this.reducedMotion && this.particleTimer >= 1 / 30 && this.particles.length < 100) {
+        this.particleTimer = 0;
         const jetAngle = p.angle + Math.PI + (Math.random() - 0.5) * 0.4;
         const jetSpeed = 80 + Math.random() * 80;
         this.particles.push({
@@ -470,7 +533,7 @@ export class GameEngine {
     }
 
     // Mines (occasional obstacles)
-    st.mine += dt;
+    if (elapsed >= 8) st.mine += dt;
     const maxMines = elapsed < 10 ? 1 : (isOverload ? 4 : 3);
     if (st.mine > 4.5 && this.countHazards('MINE') < maxMines) {
       st.mine = 0;
@@ -479,11 +542,15 @@ export class GameEngine {
   }
 
   countCollectibles(type) {
-    return this.collectibles.filter(c => c.type === type).length;
+    let count = 0;
+    for (const item of this.collectibles) if (item.type === type) count++;
+    return count;
   }
 
   countHazards(type) {
-    return this.hazards.filter(h => h.type === type).length;
+    let count = 0;
+    for (const item of this.hazards) if (item.type === type) count++;
+    return count;
   }
 
   // ==========================================
@@ -676,7 +743,7 @@ export class GameEngine {
       // Sparkles for golden core
       if (c.type === 'GOLDEN_CORE') {
         c.sparkleTimer = (c.sparkleTimer || 0) + dt;
-        if (c.sparkleTimer > 0.08) {
+        if (!this.reducedMotion && c.sparkleTimer > 0.12 && this.particles.length < 100) {
           c.sparkleTimer = 0;
           this.particles.push({
             x: c.x + (Math.random() - 0.5) * 25,
@@ -859,7 +926,7 @@ export class GameEngine {
 
     this.score += earnedPoints;
 
-    // Anti-cheat verification logging
+    // Keep the result's score consistency log in sync with gameplay.
     if (this.session) {
       recordCollection(this.session, c.type, basePts, this.combo, isDouble);
     }
@@ -885,7 +952,7 @@ export class GameEngine {
     this.addFloatingText(textDesc, c.x, c.y - 10, textColor, c.type === 'GOLDEN_CORE' ? 22 : 17);
 
     // Sparkle burst particles
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < (this.reducedMotion ? 0 : 6) && this.particles.length < 100; i++) {
       const angle = Math.random() * Math.PI * 2;
       const spd = 60 + Math.random() * 120;
       this.particles.push({
@@ -902,6 +969,9 @@ export class GameEngine {
   }
 
   triggerPowerUp(type) {
+    // A new pickup replaces the previous effect, including its player flags.
+    this.player.shieldActive = false;
+    this.player.isMalfunctioning = false;
     if (type === 'SHIELD') {
       this.player.shieldActive = true;
       this.activePowerUp = { type, name: 'SHIELD', timeLeft: 12.0, duration: 12.0 };
@@ -933,6 +1003,7 @@ export class GameEngine {
   // ==========================================
   onPlayerHit() {
     const p = this.player;
+    if (p.isInvulnerable || this.lives <= 0) return;
 
     // Check if Shield absorbs hit!
     if (p.shieldActive) {
@@ -949,9 +1020,10 @@ export class GameEngine {
     // Normal Hazard Hit:
     // Stun player, deduct points, reset combo, shake & flash
     p.isStunned = true;
-    p.stunTime = 0.75;
+    p.stunTime = 0.3;
     p.isInvulnerable = true;
     p.invulnerableTime = 1.6;
+    this.lives = Math.max(0, this.lives - 1);
 
     // Reset combo
     this.combo = 1;
@@ -967,7 +1039,7 @@ export class GameEngine {
 
     // Audio & Screen Effects
     sound.playHit();
-    if (navigator.vibrate) {
+    if (!this.reducedMotion && navigator.vibrate) {
       navigator.vibrate([80, 50, 80]);
     }
     this.screenShake = 10;
@@ -976,7 +1048,7 @@ export class GameEngine {
     this.addFloatingText(`-${penalty}`, p.x, p.y - 25, '#ff2a55', 22, 1.2);
 
     // Collision shockwave sparks
-    for (let i = 0; i < 16; i++) {
+    for (let i = 0; i < (this.reducedMotion ? 0 : 10) && this.particles.length < 100; i++) {
       const angle = Math.random() * Math.PI * 2;
       const spd = 80 + Math.random() * 160;
       this.particles.push({
@@ -990,6 +1062,8 @@ export class GameEngine {
         decay: 3.0,
       });
     }
+    this.emitHUD(true);
+    if (this.lives === 0) this.endGame('LIVES');
   }
 
   // ==========================================
@@ -997,10 +1071,15 @@ export class GameEngine {
   // ==========================================
   render() {
     const ctx = this.ctx;
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    ctx.fillStyle = '#0b1420';
+    ctx.fillRect(0, 0, this.cssWidth, this.cssHeight);
     ctx.save();
+    ctx.translate(this.offsetX, this.offsetY);
+    ctx.scale(this.worldScale, this.worldScale);
 
     // Screen Shake offset
-    if (this.screenShake > 0) {
+    if (this.screenShake > 0 && !this.reducedMotion) {
       const shakeX = (Math.random() - 0.5) * this.screenShake;
       const shakeY = (Math.random() - 0.5) * this.screenShake;
       ctx.translate(shakeX, shakeY);
@@ -1025,7 +1104,7 @@ export class GameEngine {
     this.renderFloatingTexts(ctx);
 
     // 7. Red Vignette Flash
-    if (this.redVignette > 0) {
+    if (this.redVignette > 0 && !this.reducedMotion) {
       ctx.fillStyle = `rgba(255, 42, 85, ${this.redVignette * 0.4})`;
       ctx.fillRect(0, 0, this.width, this.height);
     }
@@ -1038,101 +1117,62 @@ export class GameEngine {
     ctx.restore();
   }
 
+  cacheArena() {
+    this.floorLayers = [false, true].map(overload => {
+      const layer = document.createElement('canvas');
+      layer.width = this.width;
+      layer.height = this.height;
+      const ctx = layer.getContext('2d', { alpha: false });
+      ctx.fillStyle = '#0c1825';
+      ctx.fillRect(0, 0, this.width, this.height);
+      ctx.strokeStyle = overload ? '#302633' : '#162b3a';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let x = 0; x <= this.width; x += 48) { ctx.moveTo(x, 0); ctx.lineTo(x, this.height); }
+      for (let y = 0; y <= this.height; y += 48) { ctx.moveTo(0, y); ctx.lineTo(this.width, y); }
+      ctx.stroke();
+      ctx.strokeStyle = overload ? '#774052' : '#26495a';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(2, 2, this.width - 4, this.height - 4);
+      return layer;
+    });
+  }
+
   renderArena(ctx) {
-    // Cyber arena dark background
-    ctx.fillStyle = '#07090e';
-    ctx.fillRect(0, 0, this.width, this.height);
-
-    // Grid pattern
-    const gridSize = 32;
-    const gridColor = this.systemOverloadActive 
-      ? 'rgba(255, 42, 85, 0.15)' 
-      : 'rgba(0, 240, 255, 0.08)';
-
-    ctx.strokeStyle = gridColor;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    for (let x = 0; x <= this.width; x += gridSize) {
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, this.height);
-    }
-    for (let y = 0; y <= this.height; y += gridSize) {
-      ctx.moveTo(0, y);
-      ctx.lineTo(this.width, y);
-    }
-    ctx.stroke();
-
-    // Arena glowing boundary border
-    ctx.strokeStyle = this.systemOverloadActive 
-      ? 'rgba(255, 42, 85, 0.8)' 
-      : 'rgba(0, 240, 255, 0.4)';
-    ctx.lineWidth = 3;
-    ctx.strokeRect(3, 3, this.width - 6, this.height - 6);
+    ctx.drawImage(this.floorLayers[this.systemOverloadActive ? 1 : 0], 0, 0);
   }
 
   renderPlayer(ctx) {
     const p = this.player;
-
-    // Invulnerability blinking
-    if (p.isInvulnerable && Math.floor(Date.now() / 80) % 2 === 0) {
-      return; // Skip frame for blink effect
-    }
-
     ctx.save();
     ctx.translate(p.x, p.y);
-    ctx.rotate(p.angle);
-
-    // 1. Thruster Glow
-    ctx.fillStyle = '#00f0ff';
+    ctx.rotate(p.angle + Math.PI / 2);
+    if (p.isInvulnerable) ctx.globalAlpha = this.reducedMotion ? 0.7 : 0.65 + Math.sin(this.totalElapsedTime * 12) * 0.2;
+    ctx.fillStyle = '#19576c';
+    ctx.fillRect(-16, 11, 9, 12);
+    ctx.fillRect(7, 11, 9, 12);
+    ctx.fillStyle = p.isStunned ? '#fd7b86' : p.isMalfunctioning ? '#c786f3' : '#54dfd5';
     ctx.beginPath();
-    ctx.arc(-14, 0, 6, 0, Math.PI * 2);
+    ctx.roundRect(-17, -20, 34, 40, 10);
     ctx.fill();
-
-    // 2. Robot Chassis (Futuristic Diamond/Arrow Shape)
-    ctx.fillStyle = p.isStunned ? '#ff2a55' : (p.isMalfunctioning ? '#ff007f' : '#0f172a');
-    ctx.strokeStyle = p.isStunned ? '#ffffff' : (p.isMalfunctioning ? '#ff007f' : '#00f0ff');
-    ctx.lineWidth = 2.5;
-
+    ctx.fillStyle = '#0a2636';
     ctx.beginPath();
-    ctx.moveTo(18, 0);           // Front nose
-    ctx.lineTo(-12, -14);        // Top rear wing
-    ctx.lineTo(-6, 0);           // Rear notch
-    ctx.lineTo(-12, 14);         // Bottom rear wing
-    ctx.closePath();
+    ctx.roundRect(-13, -14, 26, 21, 7);
     ctx.fill();
-    ctx.stroke();
-
-    // 3. Glowing Center Core / Eye
-    ctx.fillStyle = p.isStunned ? '#ffffff' : '#00ff88';
-    ctx.shadowColor = '#00ff88';
-    ctx.shadowBlur = 8;
-    ctx.beginPath();
-    ctx.arc(3, 0, 4.5, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.shadowBlur = 0;
-
-    // 4. Shield Bubble
-    if (p.shieldActive) {
-      ctx.strokeStyle = 'rgba(0, 240, 255, 0.75)';
+    ctx.fillStyle = '#dcfff8';
+    ctx.beginPath(); ctx.roundRect(-9, -9, 5, 8, 2); ctx.roundRect(4, -9, 5, 8, 2); ctx.fill();
+    ctx.fillStyle = '#c4f979';
+    ctx.fillRect(-7, 12, 14, 3);
+    ctx.strokeStyle = '#54dfd5'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(0, -20); ctx.lineTo(0, -26); ctx.stroke();
+    ctx.fillStyle = '#c4f979';
+    ctx.beginPath(); ctx.arc(0, -27, 3, 0, Math.PI * 2); ctx.fill();
+    if (p.shieldActive || this.activePowerUp?.type === 'MAGNET') {
+      ctx.strokeStyle = p.shieldActive ? '#88f5f4' : '#c786f3';
       ctx.lineWidth = 2;
-      ctx.fillStyle = 'rgba(0, 240, 255, 0.15)';
-      ctx.beginPath();
-      ctx.arc(0, 0, p.radius + 8, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
+      if (!p.shieldActive) ctx.setLineDash([4, 5]);
+      ctx.beginPath(); ctx.arc(0, 0, 32, 0, Math.PI * 2); ctx.stroke();
     }
-
-    // 5. Magnet Aura Ring
-    if (this.activePowerUp?.type === 'MAGNET') {
-      ctx.strokeStyle = 'rgba(168, 85, 247, 0.5)';
-      ctx.setLineDash([4, 4]);
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.arc(0, 0, p.radius + 12, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.setLineDash([]);
-    }
-
     ctx.restore();
   }
 
@@ -1148,7 +1188,7 @@ export class GameEngine {
         // Green Battery
         ctx.fillStyle = '#00ff88';
         ctx.shadowColor = '#00ff88';
-        ctx.shadowBlur = 10;
+        ctx.shadowBlur = this.reducedMotion ? 0 : 5;
         // Battery body
         ctx.fillRect(-8, -12, 16, 24);
         // Terminal cap
@@ -1171,7 +1211,7 @@ export class GameEngine {
         ctx.rotate(c.rotation);
         ctx.fillStyle = '#00f0ff';
         ctx.shadowColor = '#00f0ff';
-        ctx.shadowBlur = 14;
+        ctx.shadowBlur = this.reducedMotion ? 0 : 5;
 
         ctx.beginPath();
         ctx.arc(0, 0, c.radius - 4, 0, Math.PI * 2);
@@ -1186,7 +1226,7 @@ export class GameEngine {
         ctx.rotate(c.rotation);
         ctx.fillStyle = '#ffd700';
         ctx.shadowColor = '#ffd700';
-        ctx.shadowBlur = 20;
+        ctx.shadowBlur = this.reducedMotion ? 0 : 5;
 
         ctx.beginPath();
         ctx.arc(0, 0, c.radius - 2, 0, Math.PI * 2);
@@ -1209,7 +1249,7 @@ export class GameEngine {
         ctx.rotate(c.rotation);
         ctx.fillStyle = c.color;
         ctx.shadowColor = c.color;
-        ctx.shadowBlur = 16;
+        ctx.shadowBlur = this.reducedMotion ? 0 : 5;
 
         ctx.fillRect(-12, -12, 24, 24);
         ctx.strokeStyle = '#ffffff';
@@ -1219,7 +1259,7 @@ export class GameEngine {
         // '?' Glyph
         ctx.rotate(-c.rotation); // keep question mark upright
         ctx.fillStyle = '#ffffff';
-        ctx.font = 'bold 15px Rajdhani, sans-serif';
+        ctx.font = 'bold 15px Outfit, sans-serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText('?', 0, 1);
@@ -1242,7 +1282,7 @@ export class GameEngine {
         ctx.strokeStyle = '#ff2a55';
         ctx.lineWidth = 2.5;
         ctx.shadowColor = '#ff2a55';
-        ctx.shadowBlur = 12;
+        ctx.shadowBlur = this.reducedMotion ? 0 : 5;
 
         ctx.beginPath();
         ctx.moveTo(16, 0);
@@ -1274,7 +1314,7 @@ export class GameEngine {
           ctx.strokeStyle = 'rgba(255, 42, 85, 0.9)';
           ctx.lineWidth = h.thickness;
           ctx.shadowColor = '#ff2a55';
-          ctx.shadowBlur = 20;
+          ctx.shadowBlur = this.reducedMotion ? 0 : 5;
 
           ctx.beginPath();
           ctx.moveTo(h.x1, h.y1);
@@ -1291,7 +1331,7 @@ export class GameEngine {
         ctx.strokeStyle = '#ff2a55';
         ctx.lineWidth = h.thickness;
         ctx.shadowColor = '#ff2a55';
-        ctx.shadowBlur = 14;
+        ctx.shadowBlur = this.reducedMotion ? 0 : 5;
 
         ctx.beginPath();
         if (h.isHorizontal) {
@@ -1316,7 +1356,7 @@ export class GameEngine {
         ctx.strokeStyle = '#ff2a55';
         ctx.lineWidth = 2;
         ctx.shadowColor = '#ff2a55';
-        ctx.shadowBlur = 10;
+        ctx.shadowBlur = this.reducedMotion ? 0 : 5;
 
         ctx.beginPath();
         ctx.arc(0, 0, h.radius * pulseScale, 0, Math.PI * 2);
@@ -1351,10 +1391,10 @@ export class GameEngine {
     for (const t of this.floatingTexts) {
       ctx.globalAlpha = Math.max(0, t.alpha);
       ctx.fillStyle = t.color;
-      ctx.font = `bold ${t.size}px Orbitron, Rajdhani, sans-serif`;
+      ctx.font = `bold ${t.size}px Outfit, sans-serif`;
       ctx.textAlign = 'center';
       ctx.shadowColor = t.color;
-      ctx.shadowBlur = 8;
+      ctx.shadowBlur = this.reducedMotion ? 0 : 5;
       ctx.fillText(t.text, t.x, t.y);
     }
     ctx.restore();
@@ -1367,12 +1407,12 @@ export class GameEngine {
     ctx.fillRect(0, bannerY - 24, this.width, 48);
 
     ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 22px Orbitron, sans-serif';
+    ctx.font = 'bold 22px Outfit, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.shadowColor = '#000';
-    ctx.shadowBlur = 6;
-    ctx.fillText('⚠️ SYSTEM OVERLOAD! ⚠️', this.width / 2, bannerY);
+    ctx.shadowBlur = this.reducedMotion ? 0 : 5;
+    ctx.fillText('OVERLOAD · 50% MORE POINTS', this.width / 2, bannerY);
     ctx.restore();
   }
 }

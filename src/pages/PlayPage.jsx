@@ -1,62 +1,29 @@
-import React, { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, lazy, Suspense } from 'react';
 import StartScreen from '../components/StartScreen';
 import GameCanvas from '../components/GameCanvas';
-import GameOverScreen from '../components/GameOverScreen';
 import { createGameSession } from '../lib/scoreValidation';
-
+import { enterGameFullscreen, leaveGameFullscreen } from '../lib/fullscreen';
+const GameOverScreen = lazy(() => import('../components/GameOverScreen'));
 export default function PlayPage() {
-  const [gameState, setGameState] = useState('START'); // 'START' | 'PLAYING' | 'GAMEOVER'
+  const [stage, setStage] = useState('START');
   const [session, setSession] = useState(null);
-  const [finalScore, setFinalScore] = useState(0);
-
-  // Start new game run
-  const handleStartGame = useCallback((nickname) => {
-    const newSession = createGameSession(nickname);
-    setSession(newSession);
-    setFinalScore(0);
-    setGameState('PLAYING');
+  const [result, setResult] = useState(null);
+  const start = useCallback(nickname => {
+    // Keep fullscreen in the tap handler: browsers require user activation.
+    void enterGameFullscreen();
+    setSession(createGameSession(nickname)); setResult(null); setStage('PLAYING');
   }, []);
-
-  // Handle run conclusion (60s timer finished)
-  const handleGameOver = useCallback(({ score, session: finalSession }) => {
-    setFinalScore(score);
-    if (finalSession) {
-      setSession(finalSession);
-    }
-    setGameState('GAMEOVER');
+  const finish = useCallback(run => {
+    leaveGameFullscreen(); setResult(run); setStage('GAMEOVER');
   }, []);
-
-  // Rematch
-  const handlePlayAgain = useCallback(() => {
-    if (session && session.nickname) {
-      handleStartGame(session.nickname);
-    } else {
-      setGameState('START');
-    }
-  }, [session, handleStartGame]);
-
-  return (
-    <div className="w-full h-full min-h-screen bg-cyber-dark text-slate-100 flex flex-col justify-center items-center">
-      {gameState === 'START' && (
-        <StartScreen onStartGame={handleStartGame} />
-      )}
-
-      {gameState === 'PLAYING' && (
-        <div className="fixed inset-0 w-full h-full">
-          <GameCanvas
-            session={session}
-            onGameOver={handleGameOver}
-          />
-        </div>
-      )}
-
-      {gameState === 'GAMEOVER' && (
-        <GameOverScreen
-          score={finalScore}
-          session={session}
-          onPlayAgain={handlePlayAgain}
-        />
-      )}
-    </div>
-  );
+  const home = useCallback(() => { leaveGameFullscreen(); setStage('START'); }, []);
+  useEffect(() => {
+    document.title = 'BOT BLITZ | GDR Arcade';
+    return () => leaveGameFullscreen();
+  }, []);
+  return <div className="play-page">
+    {stage === 'START' && <StartScreen onStartGame={start} />}
+    {stage === 'PLAYING' && <GameCanvas key={session.sessionId} session={session} onGameOver={finish} onExit={home} />}
+    {stage === 'GAMEOVER' && <Suspense fallback={<div className="loading-screen">Wrapping up your run…</div>}><GameOverScreen score={result.score} session={session} result={result} onPlayAgain={() => start(session.nickname)} onHome={home} /></Suspense>}
+  </div>;
 }

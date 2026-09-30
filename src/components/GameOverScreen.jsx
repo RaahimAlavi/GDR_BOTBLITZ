@@ -1,170 +1,51 @@
-import React, { useState, useEffect } from 'react';
-import { Trophy, RotateCcw, Monitor, Award, Sparkles, CheckCircle2 } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { ArrowRight, CheckCircle2, Home, RotateCcw, Trophy, WifiOff } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { calculatePlayerRank, submitScore } from '../lib/supabase';
-import { validateSessionScore } from '../lib/scoreValidation';
-import { sound } from '../lib/soundFx';
+import { processResult, retryResult } from '../lib/results';
+import { readPreference } from '../lib/storage';
+import Brand from './Brand';
+import { Hearts } from './GameHUD';
 
-export default function GameOverScreen({ score, session, onPlayAgain }) {
-  const [rank, setRank] = useState(null);
-  const [personalBest, setPersonalBest] = useState(0);
-  const [isNewPersonalBest, setIsNewPersonalBest] = useState(false);
-  const [submitStatus, setSubmitStatus] = useState('Verifying run...');
-
+export default function GameOverScreen({score, session, result, onPlayAgain, onHome}) {
+  const [saved, setSaved] = useState(null);
+  const [error, setError] = useState('');
+  const [retrying, setRetrying] = useState(false);
   useEffect(() => {
-    let isMounted = true;
-
-    async function processGameResult() {
-      // 1. Check personal best in localStorage
-      const prevBest = parseInt(localStorage.getItem('botblitz_personal_best') || '0', 10);
-      const isRecord = score > prevBest;
-      if (isRecord) {
-        localStorage.setItem('botblitz_personal_best', score.toString());
-      }
-      setPersonalBest(Math.max(prevBest, score));
-      setIsNewPersonalBest(isRecord);
-
-      // 2. Validate session with Anti-Cheat engine
-      const validation = validateSessionScore(session, score);
-      if (!validation.isValid) {
-        console.warn('Anti-cheat rejection:', validation.reason);
-        setSubmitStatus('Run verification flagged');
-        setIsSubmitting(false);
-        return;
-      }
-
-      // 3. Submit score to Supabase (or offline local storage)
-      setSubmitStatus('Transmitting score to kiosk...');
-      try {
-        await submitScore({
-          nickname: session.nickname,
-          score: validation.validatedScore,
-          sessionId: session.sessionId,
-          gameDuration: validation.duration,
-        });
-
-        // 4. Calculate Rank Today
-        const playerRank = await calculatePlayerRank(validation.validatedScore, true);
-        if (isMounted) {
-          setRank(playerRank);
-          setSubmitStatus('Score logged successfully');
-          setIsSubmitting(false);
-
-          if (playerRank <= 3) {
-            sound.playHighScore();
-          }
-        }
-      } catch (err) {
-        console.error('Error submitting score:', err);
-        if (isMounted) {
-          setSubmitStatus('Score saved offline');
-          setIsSubmitting(false);
-        }
-      }
-    }
-
-    processGameResult();
-
-    return () => {
-      isMounted = false;
-    };
+    let active = true;
+    processResult(session, score).then(data => {if (active) setSaved(data);})
+      .catch(err => {if (active) setError(err.message);});
+    return () => {active = false;};
   }, [score, session]);
-
-  return (
-    <div className="relative min-h-screen w-full flex flex-col justify-between items-center px-4 py-6 cyber-grid-dense text-slate-100 overflow-y-auto animate-fade-in">
-      {/* Top Header */}
-      <header className="w-full max-w-md flex items-center justify-between z-10">
-        <div className="flex flex-col">
-          <span className="text-[10px] font-mono tracking-widest text-cyber-neonGreen uppercase font-bold">
-            Freshers Week 2026
-          </span>
-          <span className="text-xs font-mono tracking-wider text-slate-400">
-            Gaming & Robotics Society
-          </span>
+  async function retry() {
+    setRetrying(true); setError('');
+    try {setSaved(await retryResult(session, score));} catch(err) {setError(err.message);}
+    finally {setRetrying(false);}
+  }
+  const livesEnded = result.reason === 'LIVES';
+  const status = error ? 'Score could not be saved.' : !saved ? 'Saving your score…' : saved.sync === 'local' ? 'Saved on this device. Kiosk sync unavailable.' : saved.sync === 'demo' ? 'Saved to the demo leaderboard.' : 'Your score is on the leaderboard.';
+  return <div className="arcade-shell result-shell">
+    <header className="site-header"><Brand /><button className="quiet-link" onClick={onHome}><Home size={17} />Home</button></header>
+    <main className="result-layout">
+      <section className="result-intro">
+        <span className="eyebrow">{livesEnded ? 'OUT OF HEARTS, STILL A HERO' : '60 SECONDS. YOU MADE IT.'}</span>
+        <h1>{livesEnded ? <>Good run,<span>pilot.</span></> : <>Nicely<span>blitzed.</span></>}</h1>
+        <p className="muted">{livesEnded ? 'A little practice. A bigger score next time.' : 'Your little bot has earned a breather.'}</p>
+        <div className="result-player"><span className="status-dot" />{session.nickname}<Hearts lives={result.lives} /></div>
+      </section>
+      <section className="result-panel">
+        <div className="panel-heading"><span className="eyebrow">YOUR SCORE</span>{saved?.isRecord && <span className="record-badge"><Trophy size={13} />PERSONAL BEST</span>}</div>
+        <div className="final-score">{score.toLocaleString()}<span>PTS</span></div>
+        <div className="result-stats">
+          <div><span>SURVIVED</span><strong>{Math.floor(result.duration)}<small>s</small></strong></div>
+          <div><span>BEST COMBO</span><strong>{result.bestCombo}<small>×</small></strong></div>
+          <div><span>COLLECTED</span><strong>{result.collected}</strong></div>
         </div>
-        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-900/80 border border-slate-700 text-[10px] font-mono text-slate-300">
-          <CheckCircle2 className="w-3 h-3 text-cyber-neonGreen" />
-          <span>{submitStatus}</span>
-        </div>
-      </header>
-
-      {/* Main Result Card */}
-      <main className="w-full max-w-md flex flex-col items-center text-center my-auto py-4 z-10">
-        <div className="text-xs font-mono tracking-widest text-cyber-neonCyan uppercase mb-1">
-          SIMULATION CONCLUDED
-        </div>
-        <h1 className="text-3xl sm:text-4xl font-black font-display tracking-wider text-white">
-          BOT BLITZ
-        </h1>
-        <p className="text-xs font-mono text-slate-400 tracking-wider mb-6">
-          PILOT: <span className="text-cyber-neonGreen font-bold">{session?.nickname || 'PILOT'}</span>
-        </p>
-
-        {/* Score Display Card */}
-        <div className="w-full relative p-6 rounded-2xl bg-cyber-card border-2 border-cyber-neonCyan/40 shadow-neon-cyan flex flex-col items-center">
-          {isNewPersonalBest && (
-            <div className="absolute -top-3 px-3 py-1 rounded-full bg-gradient-to-r from-cyber-gold to-yellow-500 text-slate-950 font-display font-black text-[10px] tracking-wider uppercase flex items-center gap-1 shadow-md">
-              <Sparkles className="w-3 h-3" />
-              <span>NEW PERSONAL BEST!</span>
-            </div>
-          )}
-
-          <span className="text-xs font-mono uppercase tracking-widest text-slate-400 mb-1">
-            FINAL SCORE
-          </span>
-          <div className="text-5xl sm:text-6xl font-display font-black text-transparent bg-clip-text bg-gradient-to-b from-white via-cyan-100 to-cyber-neonCyan tracking-tight text-glow-cyan">
-            {score.toLocaleString()}
-          </div>
-
-          {/* Stats Grid: Rank Today & Best Score */}
-          <div className="grid grid-cols-2 gap-3 w-full mt-6 pt-6 border-t border-slate-800">
-            <div className="flex flex-col items-center p-3 rounded-xl bg-slate-900/60 border border-slate-800">
-              <div className="flex items-center gap-1 text-[11px] font-mono text-slate-400 uppercase">
-                <Trophy className="w-3.5 h-3.5 text-cyber-gold" />
-                <span>Rank Today</span>
-              </div>
-              <span className="text-2xl font-display font-extrabold text-white mt-1">
-                {rank !== null ? `#${rank}` : '...'}
-              </span>
-            </div>
-
-            <div className="flex flex-col items-center p-3 rounded-xl bg-slate-900/60 border border-slate-800">
-              <div className="flex items-center gap-1 text-[11px] font-mono text-slate-400 uppercase">
-                <Award className="w-3.5 h-3.5 text-cyber-neonPurple" />
-                <span>Personal Best</span>
-              </div>
-              <span className="text-2xl font-display font-extrabold text-slate-200 mt-1">
-                {personalBest.toLocaleString()}
-              </span>
-            </div>
-          </div>
-        </div>
-
-        {/* Action Buttons */}
-        <div className="flex flex-col gap-3 w-full mt-6">
-          <button
-            type="button"
-            onClick={onPlayAgain}
-            className="w-full h-14 rounded-xl bg-gradient-to-r from-cyber-neonCyan to-cyan-400 text-slate-950 font-display font-black text-lg tracking-widest uppercase flex items-center justify-center gap-2 shadow-neon-cyan hover:brightness-110 active:scale-98 transition duration-150"
-          >
-            <RotateCcw className="w-5 h-5 stroke-[2.5]" />
-            <span>PLAY AGAIN</span>
-          </button>
-
-          <Link
-            to="/leaderboard"
-            className="w-full h-12 rounded-xl bg-slate-900/90 border border-cyber-gold/50 text-cyber-gold hover:bg-cyber-gold/10 font-display font-bold text-sm tracking-wider uppercase flex items-center justify-center gap-2 shadow-md active:scale-98 transition duration-150"
-          >
-            <Monitor className="w-4 h-4" />
-            <span>VIEW LIVE LEADERBOARD</span>
-          </Link>
-        </div>
-      </main>
-
-      {/* Footer Branding */}
-      <footer className="w-full max-w-md text-center text-[10px] font-mono text-slate-500 z-10">
-        Gaming & Robotics Society • Freshers Week
-      </footer>
-    </div>
-  );
+        <div className="result-standing"><span>Today's rank <strong>{saved?.rank ? '#' + saved.rank : '—'}</strong></span><span>Your best <strong>{(saved?.best ?? (Number(readPreference('botblitz_personal_best', '0')) || score)).toLocaleString()}</strong></span></div>
+        <div className={'save-status ' + ((saved?.sync === 'local' || error) ? 'offline' : '')} role="status">{saved?.sync === 'local' || error ? <WifiOff size={16} /> : <CheckCircle2 size={16} />}<span>{retrying ? 'Trying again…' : status}</span>{(saved?.sync === 'local' || error) && <button onClick={retry} disabled={retrying}>Retry</button>}</div>
+        <button className="primary-button" onClick={onPlayAgain}><RotateCcw size={19} /> ONE MORE RUN <ArrowRight size={20} /></button>
+        <Link className="secondary-button" to="/leaderboard"><Trophy size={17} /> View leaderboard</Link>
+      </section>
+    </main>
+    <footer className="site-footer"><span>Every run starts with a fresh set of hearts.</span><span>GDR / ARCADE</span></footer>
+  </div>;
 }

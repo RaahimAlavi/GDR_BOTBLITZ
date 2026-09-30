@@ -6,8 +6,8 @@
 
 import { createClient } from '@supabase/supabase-js';
 
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const SUPABASE_URL = import.meta.env?.VITE_SUPABASE_URL;
+const SUPABASE_ANON_KEY = import.meta.env?.VITE_SUPABASE_ANON_KEY;
 
 export const isSupabaseConfigured = Boolean(
   SUPABASE_URL && 
@@ -44,18 +44,15 @@ function getLocalScores() {
       localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(INITIAL_DEMO_SCORES));
       return INITIAL_DEMO_SCORES;
     }
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter(row => typeof row.nickname === 'string' && Number.isFinite(row.score) && row.created_at) : INITIAL_DEMO_SCORES;
   } catch {
     return INITIAL_DEMO_SCORES;
   }
 }
 
 function saveLocalScores(scores) {
-  try {
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(scores));
-  } catch (err) {
-    console.error('Failed to save local scores', err);
-  }
+  localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(scores));
 }
 
 // Custom event emitter for same-window / cross-tab local realtime sync
@@ -70,10 +67,7 @@ function notifyLocalRealtime(newRecord) {
     }
   });
 
-  // Cross-tab broadcast via storage event
-  try {
-    window.dispatchEvent(new CustomEvent('botblitz_new_score', { detail: newRecord }));
-  } catch {}
+  // Other tabs receive the native storage event from saveLocalScores.
 }
 
 /**
@@ -110,7 +104,7 @@ export async function fetchTopScores({ mode = 'today', limit = 10 } = {}) {
       if (error) throw error;
       return data || [];
     } catch (err) {
-      console.warn('Supabase fetch failed, falling back to local scores:', err.message);
+      throw new Error('Leaderboard unavailable. Please try again.', { cause: err });
     }
   }
 
@@ -141,7 +135,8 @@ export async function fetchKioskStats() {
         .select('nickname, score, created_at')
         .gte('created_at', startOfToday);
 
-      if (!error && data) {
+      if (error) throw error;
+      if (data) {
         const uniqueNicknames = new Set(data.map(d => d.nickname.trim().toLowerCase())).size;
         const highestScore = data.reduce((max, d) => Math.max(max, d.score || 0), 0);
         return {
@@ -151,7 +146,7 @@ export async function fetchKioskStats() {
         };
       }
     } catch (err) {
-      console.warn('Supabase stats fetch error, falling back to local stats:', err);
+      throw new Error('Leaderboard stats unavailable.', { cause: err });
     }
   }
 
@@ -173,17 +168,29 @@ export async function fetchKioskStats() {
 /**
  * Submit verified score to the database
  */
-export async function submitScore({ nickname, score, sessionId, gameDuration = 60 }) {
+const submissions = new Map();
+export function submitScore(payload) {
+  if (submissions.has(payload.sessionId)) return submissions.get(payload.sessionId);
+  const task = submitScoreOnce(payload);
+  submissions.set(payload.sessionId, task);
+  void task.finally(() => submissions.delete(payload.sessionId)).catch(() => {});
+  return task;
+}
+
+async function submitScoreOnce({ nickname, score, sessionId, gameDuration = 60 }) {
   const payload = {
     nickname,
     score,
     session_id: sessionId,
     game_duration: gameDuration,
-    created_at: new Date().toISOString(),
   };
 
   if (isSupabaseConfigured && supabase) {
     try {
+      // Retry after an ambiguous response: reuse an existing saved session.
+      const existing = await supabase.from('scores').select('*').eq('session_id', sessionId).maybeSingle();
+      if (existing.error) throw existing.error;
+      if (existing.data) return { success: true, record: existing.data, sync: 'live' };
       const { data, error } = await supabase
         .from('scores')
         .insert([payload])
@@ -191,7 +198,7 @@ export async function submitScore({ nickname, score, sessionId, gameDuration = 6
         .single();
 
       if (error) throw error;
-      return { success: true, record: data };
+      return { success: true, record: data, sync: 'live' };
     } catch (err) {
       console.warn('Supabase insert failed, saving to local store:', err.message);
     }
@@ -199,8 +206,11 @@ export async function submitScore({ nickname, score, sessionId, gameDuration = 6
 
   // Local storage save
   const existing = getLocalScores();
+  const previous = existing.find(row => row.session_id === sessionId);
+  if (previous) return { success: true, record: previous, sync: isSupabaseConfigured ? 'local' : 'demo' };
   const localRecord = {
     ...payload,
+    created_at: new Date().toISOString(),
     id: `local_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
   };
 
@@ -208,14 +218,21 @@ export async function submitScore({ nickname, score, sessionId, gameDuration = 6
   saveLocalScores(updated);
   notifyLocalRealtime(localRecord);
 
-  return { success: true, record: localRecord };
+  return { success: true, record: localRecord, sync: isSupabaseConfigured ? 'local' : 'demo' };
 }
 
 /**
  * Calculates a player's rank based on their score
  */
 export async function calculatePlayerRank(score, todayOnly = true) {
-  const scores = await fetchTopScores({ mode: todayOnly ? 'today' : 'all', limit: 100 });
+  if (supabase) {
+    let query = supabase.from('scores').select('id', { count: 'exact', head: true }).gt('score', score);
+    if (todayOnly) query = query.gte('created_at', getStartOfTodayISO());
+    const { count, error } = await query;
+    if (error) throw error;
+    return count + 1;
+  }
+  const scores = await fetchTopScores({ mode: todayOnly ? 'today' : 'all', limit: Number.MAX_SAFE_INTEGER });
   const higherScores = scores.filter(s => s.score > score);
   return higherScores.length + 1;
 }
@@ -225,7 +242,7 @@ export async function calculatePlayerRank(score, todayOnly = true) {
  * @param {(newRecord: object) => void} onNewScore
  * @returns {() => void} Unsubscribe function
  */
-export function subscribeToLeaderboard(onNewScore) {
+export function subscribeToLeaderboard(onNewScore, onStatus = () => {}) {
   let supabaseChannel = null;
 
   if (isSupabaseConfigured && supabase) {
@@ -241,27 +258,30 @@ export function subscribeToLeaderboard(onNewScore) {
             }
           }
         )
-        .subscribe();
-    } catch (err) {
-      console.warn('Realtime subscription failed, using local polling/events:', err);
+        .subscribe(status => onStatus(status === 'SUBSCRIBED' ? 'live' : 'reconnecting'));
+    } catch {
+      onStatus('reconnecting');
     }
   }
 
-  // Always register local listener as well (handles local games and fallback)
-  localRealtimeListeners.add(onNewScore);
+  // Local-only records must never be announced as a live kiosk score.
+  if (!supabase) localRealtimeListeners.add(onNewScore);
 
   const storageHandler = (e) => {
-    if (e.detail) {
-      onNewScore(e.detail);
-    }
+    if (supabase || e.key !== LOCAL_STORAGE_KEY || !e.newValue) return;
+    try {
+      const before = new Set(JSON.parse(e.oldValue || '[]').map(row => row.session_id));
+      const added = JSON.parse(e.newValue).filter(row => !before.has(row.session_id));
+      for (const row of added) onNewScore(row);
+    } catch { /* Ignore malformed data from other tabs. */ }
   };
-  window.addEventListener('botblitz_new_score', storageHandler);
+  window.addEventListener('storage', storageHandler);
 
   return () => {
     if (supabaseChannel && supabase) {
       supabase.removeChannel(supabaseChannel);
     }
     localRealtimeListeners.delete(onNewScore);
-    window.removeEventListener('botblitz_new_score', storageHandler);
+    window.removeEventListener('storage', storageHandler);
   };
 }

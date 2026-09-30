@@ -60,7 +60,7 @@ export default function PowerUpIndicator({ activePowerUp }) {
   const progressPercent = Math.max(0, Math.min(100, (activePowerUp.progress || 0) * 100));
 
   return (
-    <div className={`relative overflow-hidden flex flex-col gap-1 px-3 py-1.5 rounded-lg border backdrop-blur-md shadow-lg transition-all animate-bounce ${config.bg} ${config.border}`}>
+    <div className={`powerup-indicator ${config.color}`}>
       <div className="flex items-center gap-2">
         <IconComponent className={`w-4 h-4 ${config.color}`} />
         <span className={`text-xs font-display font-bold tracking-wider ${config.color}`}>
@@ -71,7 +71,7 @@ export default function PowerUpIndicator({ activePowerUp }) {
       {/* Countdown progress bar */}
       <div className="w-full h-1 bg-slate-900/60 rounded-full overflow-hidden">
         <div 
-          className={`h-full transition-all duration-100 ease-linear rounded-full ${config.bar}`}
+          className={`h-full rounded-full ${config.bar}`}
           style={{ width: `${progressPercent}%` }}
         />
       </div>

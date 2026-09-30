@@ -3,10 +3,12 @@
  * Zero-dependency, low-latency, works smoothly on mobile and desktop
  */
 
+import { readPreference, writePreference } from './storage.js';
+
 class SoundEngine {
   constructor() {
     this.ctx = null;
-    this.muted = localStorage.getItem('botblitz_muted') === 'true';
+    this.muted = readPreference('botblitz_muted') === 'true';
   }
 
   init() {
@@ -27,7 +29,7 @@ class SoundEngine {
 
   setMuted(mute) {
     this.muted = mute;
-    localStorage.setItem('botblitz_muted', mute ? 'true' : 'false');
+    writePreference('botblitz_muted', mute ? 'true' : 'false');
   }
 
   toggleMute() {
