@@ -21,6 +21,13 @@ npm run build
 
 Routes: `/play` is the mobile game; `/leaderboard` is the responsive rankings page and TV kiosk. The phone layout includes a direct return to play. The TV view includes the QR code and fullscreen control.
 
+## Vercel deployment
+The GitHub repository is connected to the Vercel project `gdr-botblitz`. Pushes to `main` deploy production. Vercel uses the Vite preset, `npm run build`, and the `dist` output directory; SPA rewrites support direct visits to `/play` and `/leaderboard`.
+
+Set the public Supabase URL and anon key in Vercel's Production and Preview environments. Keep environment files out of Git. The optional `VITE_PLAY_URL` should be the public production game's HTTPS URL, so the TV QR remains stable even when inspecting a preview deployment. Redeploy after changing build environment variables.
+
+The QR encodes a complete web URL ending in `/play`, with no query or fragment. Pasted domains are normalized to HTTPS and invalid values fall back to the site's origin. Loopback addresses do not show a phone QR because another phone cannot reach this computer through `localhost` or `127.0.0.1`. Use the hosted `/leaderboard` for the event TV. A phone scanner may require tapping its Open Link action; websites cannot control the scanner's interface.
+
 ## Backend configuration
 Copy `.env.example` to `.env` and supply:
 ```env
