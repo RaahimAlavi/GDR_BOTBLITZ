@@ -3,6 +3,9 @@
 -- Gaming & Robotics Society Freshers Week Kiosk
 -- ========================================================
 
+-- Ensure session is in read-write mode
+SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE;
+
 -- 1. Create scores table
 CREATE TABLE IF NOT EXISTS public.scores (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -40,12 +43,19 @@ WITH CHECK (
 );
 
 -- 5. Enable Realtime Replication for the scores table
--- This allows the TV kiosk leaderboard to receive instant live updates!
-BEGIN;
-  DROP PUBLICATION IF EXISTS supabase_realtime;
-  CREATE PUBLICATION supabase_realtime;
-COMMIT;
-ALTER PUBLICATION supabase_realtime ADD TABLE public.scores;
+-- In Supabase, the publication 'supabase_realtime' is already created by default.
+-- We safely add the 'scores' table to it if it isn't already added.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' 
+    AND schemaname = 'public' 
+    AND tablename = 'scores'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.scores;
+  END IF;
+END $$;
 
 -- 6. Seed Sample Kiosk Scores (Optional)
 INSERT INTO public.scores (nickname, score, session_id, game_duration, created_at)
