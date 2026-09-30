@@ -1,20 +1,33 @@
 import { useState, useEffect } from 'react';
-import { ArrowRight, CheckCircle2, Home, RotateCcw, Trophy, WifiOff } from 'lucide-react';
+import { ArrowRight, CheckCircle2, CloudUpload, Home, RotateCcw, Trophy, WifiOff } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { processResult, retryResult } from '../lib/results';
 import { readPreference } from '../lib/storage';
+import { readScoreJob, scoreJobStatus, SYNC_EVENT } from '../lib/scoreOutbox';
 import Brand from './Brand';
 import { Hearts } from './GameHUD';
 
 export default function GameOverScreen({score, session, result, onPlayAgain, onHome}) {
   const [saved, setSaved] = useState(null);
-  const [error, setError] = useState('');
+  const [error, setError] = useState(session.persistenceError || '');
   const [retrying, setRetrying] = useState(false);
   useEffect(() => {
     let active = true;
-    processResult(session, score).then(data => {if (active) setSaved(data);})
+    let rankRequested = false;
+    const update = async () => {
+      const data = scoreJobStatus(readScoreJob(session.sessionId));
+      if (!active || !data) return;
+      setSaved(previous => ({...previous, ...data}));
+      if (data.sync === 'live' && !rankRequested) {
+        rankRequested = true;
+        try {const service = await import('../lib/supabase'); const rank = await service.calculatePlayerRank(score); if (active) setSaved(previous => ({...previous, rank}));} catch {rankRequested = false;}
+      }
+    };
+    window.addEventListener(SYNC_EVENT, update); window.addEventListener('storage', update);
+    void update();
+    processResult(session, score).then(data => {if (active) {setError(''); setSaved(previous => ({...previous, ...data, ...scoreJobStatus(readScoreJob(session.sessionId))}));}})
       .catch(err => {if (active) setError(err.message);});
-    return () => {active = false;};
+    return () => {active = false; window.removeEventListener(SYNC_EVENT, update); window.removeEventListener('storage', update);};
   }, [score, session]);
   async function retry() {
     setRetrying(true); setError('');
@@ -22,7 +35,10 @@ export default function GameOverScreen({score, session, result, onPlayAgain, onH
     finally {setRetrying(false);}
   }
   const livesEnded = result.reason === 'LIVES';
-  const status = error ? 'Score could not be saved.' : !saved ? 'Saving your score…' : saved.sync === 'local' ? 'Saved on this device. Kiosk sync unavailable.' : saved.sync === 'demo' ? 'Saved to the demo leaderboard.' : 'Your score is on the leaderboard.';
+  const waiting = saved?.sync === 'queued';
+  const status = error || saved?.error || (!saved ? 'Saving your score…' : waiting ?
+    (saved.state === 'syncing' ? 'Saved on this device. Syncing your score…' : 'Saved on this device. Will sync automatically when connected.') :
+    saved.sync === 'demo' ? 'Saved to the demo leaderboard.' : 'Your score is on the leaderboard.');
   return <div className="arcade-shell result-shell">
     <header className="site-header"><Brand /><button className="quiet-link" onClick={onHome}><Home size={17} />Home</button></header>
     <main className="result-layout">
@@ -41,7 +57,7 @@ export default function GameOverScreen({score, session, result, onPlayAgain, onH
           <div><span>COLLECTED</span><strong>{result.collected}</strong></div>
         </div>
         <div className="result-standing"><span>Today's rank <strong>{saved?.rank ? '#' + saved.rank : '—'}</strong></span><span>Your best <strong>{(saved?.best ?? (Number(readPreference('botblitz_personal_best', '0')) || score)).toLocaleString()}</strong></span></div>
-        <div className={'save-status ' + ((saved?.sync === 'local' || error) ? 'offline' : '')} role="status">{saved?.sync === 'local' || error ? <WifiOff size={16} /> : <CheckCircle2 size={16} />}<span>{retrying ? 'Trying again…' : status}</span>{(saved?.sync === 'local' || error) && <button onClick={retry} disabled={retrying}>Retry</button>}</div>
+        <div className={'save-status ' + ((waiting || error) ? 'offline' : '')} role="status">{error ? <WifiOff size={16} /> : waiting ? <CloudUpload size={16} /> : <CheckCircle2 size={16} />}<span>{retrying ? 'Trying again…' : status}</span>{(waiting || error) && <button onClick={retry} disabled={retrying || saved?.state === 'syncing'}>Retry</button>}</div>
         <button className="primary-button" onClick={onPlayAgain}><RotateCcw size={19} /> ONE MORE RUN <ArrowRight size={20} /></button>
         <Link className="secondary-button" to="/leaderboard"><Trophy size={17} /> View leaderboard</Link>
       </section>

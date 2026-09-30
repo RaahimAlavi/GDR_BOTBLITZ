@@ -1,9 +1,10 @@
-import { useState, useCallback, useEffect, lazy, Suspense } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import StartScreen from '../components/StartScreen';
 import GameCanvas from '../components/GameCanvas';
 import { createGameSession } from '../lib/scoreValidation';
 import { enterGameFullscreen, leaveGameFullscreen } from '../lib/fullscreen';
-const GameOverScreen = lazy(() => import('../components/GameOverScreen'));
+import { persistCompletedScore } from '../lib/scoreOutbox';
+import GameOverScreen from '../components/GameOverScreen';
 export default function PlayPage() {
   const [stage, setStage] = useState('START');
   const [session, setSession] = useState(null);
@@ -14,6 +15,8 @@ export default function PlayPage() {
     setSession(createGameSession(nickname)); setResult(null); setStage('PLAYING');
   }, []);
   const finish = useCallback(run => {
+    // Persist before the results chunk, network requests or fullscreen cleanup.
+    try { persistCompletedScore(run.session, run.score); } catch(error) {run.session.persistenceError = error.message;}
     leaveGameFullscreen(); setResult(run); setStage('GAMEOVER');
   }, []);
   const home = useCallback(() => { leaveGameFullscreen(); setStage('START'); }, []);
@@ -24,6 +27,6 @@ export default function PlayPage() {
   return <div className="play-page">
     {stage === 'START' && <StartScreen onStartGame={start} />}
     {stage === 'PLAYING' && <GameCanvas key={session.sessionId} session={session} onGameOver={finish} onExit={home} />}
-    {stage === 'GAMEOVER' && <Suspense fallback={<div className="loading-screen">Wrapping up your run…</div>}><GameOverScreen score={result.score} session={session} result={result} onPlayAgain={() => start(session.nickname)} onHome={home} /></Suspense>}
+    {stage === 'GAMEOVER' && <GameOverScreen score={result.score} session={session} result={result} onPlayAgain={() => start(session.nickname)} onHome={home} />}
   </div>;
 }

@@ -9,7 +9,7 @@
 
 The Vite production build and SPA rewrites are configured in `vercel.json`. The repository is connected to Vercel for deployments on push. Public Supabase configuration and the canonical `VITE_PLAY_URL=https://gdr-botblitz.vercel.app/play` are set in Production and Preview. Environment files and local Vercel metadata are ignored by Git and deployment upload rules.
 
-Open tabs can reference an older lazy-loaded bundle after a new release. Vite's `vite:preloadError` event now reloads the current URL to recover, and HTML routes use `Cache-Control: no-cache`. This follows [Vite's load-error guidance](https://vite.dev/guide/build.html#load-error-handling).
+Open tabs can reference an older lazy-loaded bundle after a new release. Vite's `vite:preloadError` handler checks that a chunk is actually missing before reloading the current URL, and avoids reloading an active run or results screen. Network failures receive a retry screen rather than a forced reload. HTML routes use `Cache-Control: no-cache`. This extends [Vite's load-error guidance](https://vite.dev/guide/build.html#load-error-handling) for intermittent connections.
 
 ## QR behavior
 

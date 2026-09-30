@@ -5,6 +5,9 @@
  */
 
 import { createClient } from '@supabase/supabase-js';
+import { createScoreSync } from './scoreSync.js';
+import { getScoreTarget, persistScore, readScoreJob, writeScoreJob } from './scoreOutbox.js';
+import { uploadQueuedScore } from './scoreUpload.js';
 
 const SUPABASE_URL = import.meta.env?.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env?.VITE_SUPABASE_ANON_KEY;
@@ -168,57 +171,70 @@ export async function fetchKioskStats() {
 /**
  * Submit verified score to the database
  */
-const submissions = new Map();
-export function submitScore(payload) {
-  if (submissions.has(payload.sessionId)) return submissions.get(payload.sessionId);
-  const task = submitScoreOnce(payload);
-  submissions.set(payload.sessionId, task);
-  void task.finally(() => submissions.delete(payload.sessionId)).catch(() => {});
-  return task;
-}
-
-async function submitScoreOnce({ nickname, score, sessionId, gameDuration = 60 }) {
-  const payload = {
-    nickname,
-    score,
-    session_id: sessionId,
-    game_duration: gameDuration,
-  };
-
-  if (isSupabaseConfigured && supabase) {
-    try {
-      // Retry after an ambiguous response: reuse an existing saved session.
-      const existing = await supabase.from('scores').select('*').eq('session_id', sessionId).maybeSingle();
-      if (existing.error) throw existing.error;
-      if (existing.data) return { success: true, record: existing.data, sync: 'live' };
-      const { data, error } = await supabase
-        .from('scores')
-        .insert([payload])
-        .select()
-        .single();
-
-      if (error) throw error;
-      return { success: true, record: data, sync: 'live' };
-    } catch (err) {
-      console.warn('Supabase insert failed, saving to local store:', err.message);
-    }
-  }
-
-  // Local storage save
+function saveDemoScore(payload) {
   const existing = getLocalScores();
-  const previous = existing.find(row => row.session_id === sessionId);
-  if (previous) return { success: true, record: previous, sync: isSupabaseConfigured ? 'local' : 'demo' };
+  const previous = existing.find(row => row.session_id === payload.session_id);
+  if (previous) return previous;
   const localRecord = {
     ...payload,
-    created_at: new Date().toISOString(),
     id: `local_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
   };
-
-  const updated = [localRecord, ...existing];
-  saveLocalScores(updated);
+  saveLocalScores([localRecord, ...existing]);
   notifyLocalRealtime(localRecord);
-
-  return { success: true, record: localRecord, sync: isSupabaseConfigured ? 'local' : 'demo' };
+  return localRecord;
+}
+let scoreSync;
+export function startScoreSync() {
+  if (!scoreSync) {
+    scoreSync = createScoreSync({storage:localStorage, target:getScoreTarget(),
+      upload:(payload, options) => supabase ? uploadQueuedScore(supabase, payload, options) : saveDemoScore(payload),
+      online:() => !supabase || navigator.onLine !== false});
+    scoreSync.subscribe(job => {
+      if (!supabase || job.state !== 'synced') return;
+      try {
+        const old = JSON.parse(localStorage.getItem(LOCAL_STORAGE_KEY) || '[]');
+        if (old.some(row => row.session_id === job.payload.session_id)) saveLocalScores(old.filter(row => row.session_id !== job.payload.session_id));
+      } catch { /* A confirmed legacy score can safely be checked again. */ }
+    });
+    // Adopt device-only saves from the previous deployed version, never seeds.
+    if (supabase) {
+      try {
+        const old = JSON.parse(localStorage.getItem(LOCAL_STORAGE_KEY) || '[]');
+        for (const row of old) if (row.id?.startsWith('local_') && row.session_id &&
+          Number.isSafeInteger(row.score) && row.score >= 0 && row.score <= 60000 && row.nickname?.length <= 16) {
+          persistScore({nickname:row.nickname, score:row.score, session_id:row.session_id,
+            game_duration:row.game_duration ?? 60, created_at:row.created_at});
+        }
+      } catch { /* Keep old records intact if migration cannot persist them. */ }
+    }
+  }
+  scoreSync.start();
+  return scoreSync;
+}
+export function scoreJobResult(job) {
+  return {success:true, sync:job.state === 'synced' ? (supabase ? 'live' : 'demo') : 'queued',
+    state:job.state, error:job.error, record:job.record || job.payload};
+}
+export async function submitScore({nickname, score, sessionId, gameDuration = 60}) {
+  const payload = {nickname, score, session_id:sessionId, game_duration:gameDuration, created_at:new Date().toISOString()};
+  if (!supabase) {
+    const job = persistScore(payload);
+    const record = saveDemoScore(job.payload);
+    const confirmed = {...job, state:'synced', record, syncedAt:Date.now()};
+    writeScoreJob(confirmed);
+    return scoreJobResult(confirmed);
+  }
+  return scoreJobResult(startScoreSync().enqueue(payload));
+}
+export function subscribeToScoreSync(sessionId, listener) {
+  const sync = startScoreSync();
+  const unsubscribe = sync.subscribe(job => {if (job.payload.session_id === sessionId) listener(scoreJobResult(job));});
+  const current = readScoreJob(sessionId);
+  if (current) listener(scoreJobResult(current));
+  return unsubscribe;
+}
+export function retryQueuedScores(sessionId) {
+  return startScoreSync().retry(sessionId);
 }
 
 /**

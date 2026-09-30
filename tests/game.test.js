@@ -8,7 +8,7 @@ Date.now = () => 2000000 + tick;
 after(() => { Date.now = originalNow; });
 Object.defineProperty(globalThis, 'performance', { value: { now: () => tick }, configurable: true });
 const memory = new Map();
-globalThis.localStorage = {getItem: key => memory.get(key) ?? null, setItem: (key, value) => memory.set(key, value)};
+globalThis.localStorage = {getItem: key => memory.get(key) ?? null, setItem: (key, value) => memory.set(key, value), removeItem:key=>memory.delete(key), key:index=>Array.from(memory.keys())[index], get length(){return memory.size;}};
 memory.set('botblitz_muted', 'true');
 globalThis.window = Object.assign(new EventTarget(), {devicePixelRatio:3, matchMedia:()=>({matches:false})});
 Object.defineProperty(globalThis, 'navigator', { value: { vibrate:noop }, configurable:true });
@@ -29,6 +29,8 @@ function fixture() {
   const hud = [];
   const session = createGameSession('TEST_PILOT');
   const engine = new GameEngine(canvas, {session,onGameOver:run=>completed.push(run),onHUDUpdate:value=>hud.push(value)});
+  // Lifecycle tests create their own pickups/hits; random spawns would make them flaky.
+  engine.handleSpawners = noop;
   engine.start();
   const step = (milliseconds) => {tick += milliseconds; engine.loop(tick);};
   const simulate = (seconds) => {for (let i=0;i<seconds*60;i++) step(1000/60);};
@@ -123,11 +125,11 @@ test('result replay shares one save and local notifications are delivered once',
   const f=fixture(); f.step(3000); f.step(60000);
   let notifications=0;
   const unsubscribe=subscribeToLeaderboard(()=>notifications++);
-  const first=processResult(f.session,0), second=processResult(f.session,0);
+  const first=processResult(f.session,f.engine.score), second=processResult(f.session,f.engine.score);
   assert.equal(first,second);
   const saved=await first;
   assert.equal(saved.sync,'demo'); assert.equal(notifications,1);
-  await submitScore({nickname:f.session.nickname,score:0,sessionId:f.session.sessionId});
+  await submitScore({nickname:f.session.nickname,score:f.engine.score,sessionId:f.session.sessionId});
   assert.equal(notifications,1); unsubscribe();
 });
 

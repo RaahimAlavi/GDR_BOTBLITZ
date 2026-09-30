@@ -41,9 +41,13 @@ Use `supabase.sql` to set up the scores table, read/insert policies, indexes, an
 
 With no configured backend, demo mode stores scores in the same browser origin and updates other tabs through storage events. Demo scores on different phones are independent.
 
-Configured cloud failures retain scores locally and identify them as **device-only**, with a Retry action on the results screen. Local-only scores are not announced as live kiosk scores. Fetch failures retain the last board instead of substituting demo scores.
+Each completed run is written to a durable, per-run device queue **before** the results screen or any network request. The results screen is included in the main bundle and displays “Saved on this device. Will sync automatically when connected.” Pending uploads survive closing the tab and reopening the site.
 
-Result processing shares one task across React effect replay. Save attempts in one browser are deduplicated by session. Cloud retry checks for a previously saved session before inserting. This is client-side protection against accidental duplicates, not an atomic database guarantee.
+Uploads resume automatically on reconnection, opening the site, returning to a visible tab, and timed retries. Each upload has an eight-second timeout and abort signal, with exponential backoff up to about a minute. The lobby shows pending scores and provides a manual retry. Network failures keep the run queued; permanent server rejection keeps it on the device and requests attention instead of retrying continuously. Device-only scores are not announced as live kiosk scores. Fetch failures retain the last board instead of substituting demo scores.
+
+Result processing shares one task across React effect replay. Each run uses the same UUID for its database primary key on every upload, so concurrent retries cannot create multiple rows for that run. Web Locks coordinate tabs when available; the database primary key also protects browsers without Web Locks. Retries first check for a previously saved session, including responses lost after a successful insert. Older local failures are migrated into the queue and older session strings receive deterministic UUIDs. Completion timestamps are preserved across delayed uploads. Synced receipts are retained for a week; pending runs have no expiry.
+
+Automatic sync requires the site to be open, or reopened with a connection; it does not run while the browser is closed. Clearing site data removes local pending scores. A storage failure is reported rather than labelled as a successful save. This change preserves completed scores; it does not install an offline app or guarantee a first visit without internet.
 
 ## Competition integrity
 Current run checks verify score consistency and completion by timer or three logged hits. Sessions use cryptographic UUIDs. Short life-loss runs can be saved without the old 53-second minimum or a 45-second client cooldown.
@@ -54,7 +58,7 @@ Current run checks verify score consistency and completion by timer or three log
 - Canvas resolution capped at 2× DPR; static arena artwork cached.
 - HUD meters update at about 12 Hz, with discrete score/life changes delivered immediately.
 - Time-based particle emission and a particle budget; reduced-motion support.
-- Leaderboard, results, Supabase, QR generation, and confetti are loaded as needed.
+- The lightweight results screen is included for use after a connection drop. Supabase, leaderboard, QR generation and confetti are loaded as needed.
 - GDR logo: original `assets/GDRLOGO.jpg`; ImageGen transparent master `assets/GDR-logo-transparent-master.png`; 128-pixel delivery PNG `public/gdr-logo.png`.
 - Procedural Web Audio sounds; no downloaded audio files.
 - Vercel SPA rewrites are configured in `vercel.json`.

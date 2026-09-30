@@ -1,6 +1,6 @@
 import { validateSessionScore } from './scoreValidation.js';
-import { submitScore, calculatePlayerRank } from './supabase.js';
 import { readPreference, writePreference } from './storage.js';
+import { persistCompletedScore, scoreJobStatus } from './scoreOutbox.js';
 const pendingResults = new WeakMap();
 
 // Share one result task across effect replay. A failed save can be retried.
@@ -14,13 +14,18 @@ export function processResult(session, score) {
       session.personalBestResult = {best: Math.max(previous, score), isRecord: score > previous};
       writePreference('botblitz_personal_best', Math.max(previous, score));
     }
-    const saved = await submitScore({
-      nickname: session.nickname, score: validation.validatedScore,
-      sessionId: session.sessionId, gameDuration: validation.duration,
-    });
+    const job = persistCompletedScore(session, score);
+    let saved = scoreJobStatus(job);
+    // The local confirmation is available without downloading a network client.
+    if (job.target === 'demo') {
+      try {
+        const service = await import('./supabase.js');
+        saved = await service.submitScore({nickname:session.nickname, score, sessionId:session.sessionId, gameDuration:validation.duration});
+      } catch { /* The durable demo run can be completed on the next visit. */ }
+    }
     let rank = null;
-    if (saved.sync !== 'local') {
-      try { rank = await calculatePlayerRank(score); } catch { /* Score saved, rank temporarily unavailable. */ }
+    if (saved.sync === 'live' || saved.sync === 'demo') {
+      try {const service = await import('./supabase.js'); rank = await service.calculatePlayerRank(score);} catch { /* Score saved, rank temporarily unavailable. */ }
     }
     return {...saved, rank, ...session.personalBestResult};
   })();
@@ -28,7 +33,9 @@ export function processResult(session, score) {
   task.catch(() => pendingResults.delete(session));
   return task;
 }
-export function retryResult(session, score) {
+export async function retryResult(session, score) {
+  const service = await import('./supabase.js');
+  await service.retryQueuedScores(session.sessionId);
   pendingResults.delete(session);
   return processResult(session, score);
 }

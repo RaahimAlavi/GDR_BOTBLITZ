@@ -5,6 +5,7 @@
 .env.preview
 .env.development
 .vercel
+.test-artifacts/
 
 # Logs
 logs

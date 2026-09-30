@@ -7,6 +7,7 @@ import { sound } from '../lib/soundFx';
 import Brand from './Brand';
 import RobotArt from './RobotArt';
 import SoundToggle from './SoundToggle';
+import ScoreSyncNotice from './ScoreSyncNotice';
 
 export default function StartScreen({ onStartGame }) {
   const [nickname, setNickname] = useState(() => readPreference('botblitz_player_name'));
@@ -24,6 +25,7 @@ export default function StartScreen({ onStartGame }) {
     <header className="site-header"><Brand />
       <nav aria-label="Main navigation"><Link className="quiet-link" to="/leaderboard"><Trophy size={17} /><span>Leaderboard</span><ArrowUpRight size={15} /></Link><SoundToggle /></nav>
     </header>
+    <ScoreSyncNotice />
     <main className="lobby">
       <section className="lobby-hero">
         <div className="eyebrow"><span className="status-dot" /> THE 60-SECOND ARCADE CHALLENGE</div>
