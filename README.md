@@ -2,6 +2,8 @@
 A 60-second robot arcade challenge for the Gaming & Robotics Society.
 
 ## Play
+- Enter a unique player name; random names are removed. Check a new name once, then tap Play. Returning names are remembered on that browser.
+- The leaderboard shows each name's **best run** in the selected period. Repeat runs stay in history, and Runs Today counts every attempt.
 - Start with **three hearts**. Each unshielded hazard hit costs one heart, removes 150 points, and resets your combo. A short grace period prevents repeated damage.
 - The third hit ends the run immediately. Surviving the full 60 seconds also completes the run.
 - Green batteries, blue cores, and rare gold cores give points. Chain pickups for up to 5×; mystery pickups grant temporary effects.
@@ -38,6 +40,8 @@ VITE_PLAY_URL=https://your-domain.example/play
 ```
 
 Use `supabase.sql` to set up the scores table, read/insert policies, indexes, and Realtime publication. The provided seed rows are optional. Before rerunning setup on an existing database, review its seed block.
+
+For name reservations, apply `supabase-name-reservations.sql` once in the existing database. Until it is applied, name checks use run history and cannot prevent simultaneous first-time claims of an unused name. The migration adds a private registry and token-checked submissions without deleting runs. See [player name behavior and migration](docs/PLAYER_NAMES.md).
 
 With no configured backend, demo mode stores scores in the same browser origin and updates other tabs through storage events. Demo scores on different phones are independent.
 

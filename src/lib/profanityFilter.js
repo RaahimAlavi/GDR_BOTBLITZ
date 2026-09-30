@@ -18,7 +18,7 @@ const BLOCKED_WORDS = [
  */
 export function sanitizeNickname(rawName) {
   if (!rawName || typeof rawName !== 'string') {
-    return { isValid: false, sanitizedName: '', error: 'Nickname cannot be empty' };
+    return { isValid: false, sanitizedName: '', error: 'Enter your player name to join the leaderboard.' };
   }
 
   // 1. Strip HTML and script tags
@@ -53,17 +53,4 @@ export function sanitizeNickname(rawName) {
   }
 
   return { isValid: true, sanitizedName: cleaned };
-}
-
-/**
- * Generates a fun futuristic gamer bot nickname
- */
-export function generateRandomNickname() {
-  const prefixes = ['CYBER', 'NEON', 'ROBO', 'TURBO', 'QUANTUM', 'BLITZ', 'AERO', 'NEXUS', 'TITAN', 'VOLT', 'PHANTOM', 'ZERO'];
-  const suffixes = ['BOT', 'VIPER', 'PILOT', 'CORE', 'SPARK', 'DRONE', 'RUNNER', 'BYTE', 'RIDER', 'CHIP', 'FORCE', 'GEAR'];
-  const num = Math.floor(100 + Math.random() * 900);
-  
-  const prefix = prefixes[Math.floor(Math.random() * prefixes.length)];
-  const suffix = suffixes[Math.floor(Math.random() * suffixes.length)];
-  return `${prefix}_${suffix}${num}`.slice(0, 16);
 }

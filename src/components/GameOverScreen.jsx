@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { ArrowRight, CheckCircle2, CloudUpload, Home, RotateCcw, Trophy, WifiOff } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { processResult, retryResult } from '../lib/results';
-import { readPreference } from '../lib/storage';
+import { readPlayerBest } from '../lib/playerBests';
 import { readScoreJob, scoreJobStatus, SYNC_EVENT } from '../lib/scoreOutbox';
 import Brand from './Brand';
 import { Hearts } from './GameHUD';
@@ -20,7 +20,7 @@ export default function GameOverScreen({score, session, result, onPlayAgain, onH
       setSaved(previous => ({...previous, ...data}));
       if (data.sync === 'live' && !rankRequested) {
         rankRequested = true;
-        try {const service = await import('../lib/supabase'); const rank = await service.calculatePlayerRank(score); if (active) setSaved(previous => ({...previous, rank}));} catch {rankRequested = false;}
+        try {const service = await import('../lib/supabase'); const rank = await service.calculatePlayerRank(score,true,session.nickname); if (active) setSaved(previous => ({...previous, rank}));} catch {rankRequested = false;}
       }
     };
     window.addEventListener(SYNC_EVENT, update); window.addEventListener('storage', update);
@@ -56,7 +56,7 @@ export default function GameOverScreen({score, session, result, onPlayAgain, onH
           <div><span>BEST COMBO</span><strong>{result.bestCombo}<small>×</small></strong></div>
           <div><span>COLLECTED</span><strong>{result.collected}</strong></div>
         </div>
-        <div className="result-standing"><span>Today's rank <strong>{saved?.rank ? '#' + saved.rank : '—'}</strong></span><span>Your best <strong>{(saved?.best ?? (Number(readPreference('botblitz_personal_best', '0')) || score)).toLocaleString()}</strong></span></div>
+        <div className="result-standing"><span>Today's rank <strong>{saved?.rank ? '#' + saved.rank : '—'}</strong></span><span>Your best <strong>{(saved?.best ?? Math.max(readPlayerBest(session.nickname),score)).toLocaleString()}</strong></span></div>
         <div className={'save-status ' + ((waiting || error) ? 'offline' : '')} role="status">{error ? <WifiOff size={16} /> : waiting ? <CloudUpload size={16} /> : <CheckCircle2 size={16} />}<span>{retrying ? 'Trying again…' : status}</span>{(waiting || error) && <button onClick={retry} disabled={retrying || saved?.state === 'syncing'}>Retry</button>}</div>
         <button className="primary-button" onClick={onPlayAgain}><RotateCcw size={19} /> ONE MORE RUN <ArrowRight size={20} /></button>
         <Link className="secondary-button" to="/leaderboard"><Trophy size={17} /> View leaderboard</Link>

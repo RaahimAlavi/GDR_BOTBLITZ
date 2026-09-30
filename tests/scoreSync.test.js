@@ -135,3 +135,14 @@ test('legacy session strings produce the same valid UUID on every retry', async(
   assert.equal(first,await stableScoreId('old-session-123'));
   assert.notEqual(first,await stableScoreId('old-session-124'));
 });
+
+test('reserved names upload through the ownership RPC without exposing a token in the score row',async()=>{
+  const db=database(), client=db.client(); let sent;
+  client.rpc=(name,args)=>({abortSignal:async()=>{
+    assert.equal(name,'submit_named_score'); sent=args;
+    return {data:{...args.p_run,nickname:'OFFLINE_TEST'},error:null};
+  }});
+  const result=await uploadQueuedScore(client,{...payload,name_token:'a'.repeat(64)},{signal:new AbortController().signal});
+  assert.equal(sent.p_token,'a'.repeat(64)); assert.equal(sent.p_run.name_token,undefined);
+  assert.equal(result.session_id,payload.session_id);assert.equal(db.inserts,0);
+});

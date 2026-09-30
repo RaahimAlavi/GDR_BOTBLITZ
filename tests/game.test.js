@@ -138,6 +138,28 @@ test('rank counts all higher local scores instead of capping at 100', async () =
   assert.equal(await calculatePlayerRank(10),151);
 });
 
+test('rank uses distinct names and the returning player best score, not their slower replay', async()=>{
+  memory.set('botblitz_local_scores_v1',JSON.stringify([
+    {id:'a',nickname:'Raahim',score:5000,created_at:new Date().toISOString()},
+    {id:'b',nickname:'RAAHIM',score:3000,created_at:new Date().toISOString()},
+    {id:'c',nickname:'Ali',score:4000,created_at:new Date().toISOString()},
+    {id:'d',nickname:'Ali',score:2500,created_at:new Date().toISOString()},
+    {id:'e',nickname:'Ayesha',score:6000,created_at:new Date().toISOString()},
+  ]));
+  assert.equal(await calculatePlayerRank(1000,true,'raahim'),2);
+});
+
+test('personal bests on a shared browser belong to the chosen name and recognize a queued new record',async()=>{
+  const {persistScore}=await import('../src/lib/scoreOutbox.js');
+  const {readPlayerBest,recordPlayerBest}=await import('../src/lib/playerBests.js');
+  persistScore({nickname:'NAME_A',score:5000,session_id:'personal-a'});
+  assert.equal(readPlayerBest('NAME_B'),0);
+  assert.deepEqual(recordPlayerBest('NAME_A',5000,'personal-a'),{best:5000,isRecord:true});
+  persistScore({nickname:'name_a',score:6000,session_id:'personal-a-2'});
+  assert.deepEqual(recordPlayerBest('NAME_A',6000,'personal-a-2'),{best:6000,isRecord:true});
+  assert.equal(readPlayerBest('NAME_B'),0);
+});
+
 test('native storage events deliver new scores from another tab once', () => {
   const seen=[]; const unsubscribe=subscribeToLeaderboard(row=>seen.push(row));
   const event=new Event('storage');

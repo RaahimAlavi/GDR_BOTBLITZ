@@ -90,6 +90,9 @@ button { border: 0; }
 .personal-best strong { font-family: 'Space Grotesk', sans-serif; font-size: 18px; }
 .personal-best small { color: #718b98; font-size: 9px; font-weight: 400; margin-left: 5px; }
 .form-error { color: var(--danger); font-size: 13px; line-height: 1.4; margin: -4px 0 12px; }
+.name-help { color: #819da9; font-size: 12px; line-height: 1.4; margin: -3px 0 14px; }
+.name-help.ready { color: var(--cyan); }
+.primary-button:disabled { opacity: .65; cursor: wait; }
 .site-footer { display: flex; justify-content: space-between; gap: 12px; color: #6f8a98; font-size: 11px; border-top: 1px solid #26374580; padding-top: 17px; }
 .site-footer > span:last-child { font-family: 'Space Grotesk', sans-serif; font-size: 10px; letter-spacing: .07em; }
 .loading-screen { min-height: 100dvh; display: grid; place-items: center; color: var(--muted); }

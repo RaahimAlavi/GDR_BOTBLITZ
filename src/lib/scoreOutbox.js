@@ -46,7 +46,7 @@ export function persistScore(payload, storage = localStorage, target = getScoreT
 export function persistCompletedScore(session, score) {
   const validation = validateSessionScore(session, score);
   if (!validation.isValid) throw new Error(validation.reason);
-  return persistScore({nickname:session.nickname, score, session_id:session.sessionId,
+  return persistScore({nickname:session.nickname, ...(session.nameToken ? {name_token:session.nameToken} : {}), score, session_id:session.sessionId,
     game_duration:validation.duration, created_at:new Date(session.endTime).toISOString()});
 }
 export function scoreJobStatus(job) {

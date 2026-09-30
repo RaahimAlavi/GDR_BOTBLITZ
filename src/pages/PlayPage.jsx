@@ -5,6 +5,7 @@ import { createGameSession } from '../lib/scoreValidation';
 import { enterGameFullscreen, leaveGameFullscreen } from '../lib/fullscreen';
 import { persistCompletedScore } from '../lib/scoreOutbox';
 import GameOverScreen from '../components/GameOverScreen';
+import { getNameProfile } from '../lib/playerNames';
 export default function PlayPage() {
   const [stage, setStage] = useState('START');
   const [session, setSession] = useState(null);
@@ -12,7 +13,10 @@ export default function PlayPage() {
   const start = useCallback(nickname => {
     // Keep fullscreen in the tap handler: browsers require user activation.
     void enterGameFullscreen();
-    setSession(createGameSession(nickname)); setResult(null); setStage('PLAYING');
+    const run = createGameSession(nickname);
+    const profile = getNameProfile(nickname);
+    if (profile?.reserved) run.nameToken = profile.token;
+    setSession(run); setResult(null); setStage('PLAYING');
   }, []);
   const finish = useCallback(run => {
     // Persist before the results chunk, network requests or fullscreen cleanup.

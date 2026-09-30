@@ -1,5 +1,5 @@
 import { validateSessionScore } from './scoreValidation.js';
-import { readPreference, writePreference } from './storage.js';
+import { recordPlayerBest } from './playerBests.js';
 import { persistCompletedScore, scoreJobStatus } from './scoreOutbox.js';
 const pendingResults = new WeakMap();
 
@@ -10,9 +10,7 @@ export function processResult(session, score) {
     const validation = validateSessionScore(session, score);
     if (!validation.isValid) throw new Error(validation.reason);
     if (!session.personalBestResult) {
-      const previous = Number(readPreference('botblitz_personal_best', '0')) || 0;
-      session.personalBestResult = {best: Math.max(previous, score), isRecord: score > previous};
-      writePreference('botblitz_personal_best', Math.max(previous, score));
+      session.personalBestResult = recordPlayerBest(session.nickname,score,session.sessionId);
     }
     const job = persistCompletedScore(session, score);
     let saved = scoreJobStatus(job);
@@ -25,7 +23,7 @@ export function processResult(session, score) {
     }
     let rank = null;
     if (saved.sync === 'live' || saved.sync === 'demo') {
-      try {const service = await import('./supabase.js'); rank = await service.calculatePlayerRank(score);} catch { /* Score saved, rank temporarily unavailable. */ }
+      try {const service = await import('./supabase.js'); rank = await service.calculatePlayerRank(score,true,session.nickname);} catch { /* Score saved, rank temporarily unavailable. */ }
     }
     return {...saved, rank, ...session.personalBestResult};
   })();

@@ -6,8 +6,10 @@
 
 import { createClient } from '@supabase/supabase-js';
 import { createScoreSync } from './scoreSync.js';
-import { getScoreTarget, persistScore, readScoreJob, writeScoreJob } from './scoreOutbox.js';
+import { getScoreTarget, persistScore, readScoreJob, writeScoreJob, listScoreJobs } from './scoreOutbox.js';
 import { uploadQueuedScore } from './scoreUpload.js';
+import { preparePlayerName, nameKey } from './playerNames.js';
+import { bestScoresByName, fetchBestScores, kioskStats } from './leaderboardData.js';
 
 const SUPABASE_URL = import.meta.env?.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env?.VITE_SUPABASE_ANON_KEY;
@@ -93,19 +95,7 @@ export async function fetchTopScores({ mode = 'today', limit = 10 } = {}) {
 
   if (isSupabaseConfigured && supabase) {
     try {
-      let query = supabase
-        .from('scores')
-        .select('*')
-        .order('score', { ascending: false })
-        .limit(limit);
-
-      if (mode === 'today') {
-        query = query.gte('created_at', startOfToday);
-      }
-
-      const { data, error } = await query;
-      if (error) throw error;
-      return data || [];
+      return await fetchBestScores(supabase, {since:mode === 'today' ? startOfToday : undefined, limit});
     } catch (err) {
       throw new Error('Leaderboard unavailable. Please try again.', { cause: err });
     }
@@ -120,9 +110,7 @@ export async function fetchTopScores({ mode = 'today', limit = 10 } = {}) {
     filtered = allScores.filter(s => new Date(s.created_at).getTime() >= todayTimestamp);
   }
 
-  return [...filtered]
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit);
+  return bestScoresByName(filtered, limit);
 }
 
 /**
@@ -133,20 +121,13 @@ export async function fetchKioskStats() {
 
   if (isSupabaseConfigured && supabase) {
     try {
-      const { data, error } = await supabase
-        .from('scores')
-        .select('nickname, score, created_at')
-        .gte('created_at', startOfToday);
-
-      if (error) throw error;
-      if (data) {
-        const uniqueNicknames = new Set(data.map(d => d.nickname.trim().toLowerCase())).size;
-        const highestScore = data.reduce((max, d) => Math.max(max, d.score || 0), 0);
-        return {
-          totalPlayersToday: uniqueNicknames,
-          gamesPlayedToday: data.length,
-          highestScoreToday: highestScore,
-        };
+      const rows = [];
+      for (let offset = 0; ; offset += 500) {
+        const {data, error} = await supabase.from('scores').select('id, nickname, score, created_at')
+          .gte('created_at',startOfToday).order('id',{ascending:true}).range(offset,offset + 499);
+        if (error) throw error;
+        rows.push(...(data || []));
+        if ((data || []).length < 500) return kioskStats(rows);
       }
     } catch (err) {
       throw new Error('Leaderboard stats unavailable.', { cause: err });
@@ -158,14 +139,33 @@ export async function fetchKioskStats() {
   const todayTimestamp = new Date(startOfToday).getTime();
   const todayScores = scores.filter(s => new Date(s.created_at).getTime() >= todayTimestamp);
 
-  const uniqueNicknames = new Set(todayScores.map(d => d.nickname.trim().toLowerCase())).size;
-  const highestScore = todayScores.reduce((max, d) => Math.max(max, d.score || 0), 0);
+  return kioskStats(todayScores);
+}
 
-  return {
-    totalPlayersToday: uniqueNicknames || todayScores.length,
-    gamesPlayedToday: todayScores.length,
-    highestScoreToday: highestScore,
-  };
+export async function checkPlayerName(nickname) {
+  return preparePlayerName(nickname, {connected:!supabase || navigator.onLine !== false, claim:async candidate => {
+    const own = candidate.previous?.confirmed;
+    if (!supabase) return {available:own || candidate.legacyOwner || !getLocalScores().some(row => nameKey(row.nickname) === nameKey(nickname)), nickname};
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    try {
+      const legacy = listScoreJobs().find(job => job.state === 'synced' && nameKey(job.payload.nickname) === nameKey(nickname));
+      const claim = await supabase.rpc('claim_player_name', {p_nickname:nickname, p_token:candidate.token,
+        p_legacy_session_id:legacy?.payload.session_id || null}).abortSignal(controller.signal);
+      if (!claim.error) return {...claim.data, reserved:true};
+      // Existing installations can check names against run history until the
+      // reservation migration is applied. Never fall back on network failures.
+      if (claim.error.code !== 'PGRST202') throw claim.error;
+      if (own || candidate.legacyOwner) return {available:true, nickname};
+      const escaped = nickname.replace(/[\\%_]/g, char => '\\' + char);
+      const {data, error} = await supabase.from('scores').select('nickname').ilike('nickname',escaped)
+        .limit(1).abortSignal(controller.signal);
+      if (error) throw error;
+      return {available:!data?.length, nickname};
+    } catch {
+      throw new Error('Could not check your name. Check your connection and try again.');
+    } finally {clearTimeout(timer);}
+  }});
 }
 
 /**
@@ -240,16 +240,16 @@ export function retryQueuedScores(sessionId) {
 /**
  * Calculates a player's rank based on their score
  */
-export async function calculatePlayerRank(score, todayOnly = true) {
+export async function calculatePlayerRank(score, todayOnly = true, nickname) {
   if (supabase) {
-    let query = supabase.from('scores').select('id', { count: 'exact', head: true }).gt('score', score);
-    if (todayOnly) query = query.gte('created_at', getStartOfTodayISO());
-    const { count, error } = await query;
-    if (error) throw error;
-    return count + 1;
+    const higher = await fetchBestScores(supabase, {since:todayOnly ? getStartOfTodayISO() : undefined,
+      limit:Infinity, higherThan:score});
+    const ownBest = nickname ? higher.find(row => nameKey(row.nickname) === nameKey(nickname))?.score || score : score;
+    return higher.filter(row => row.score > ownBest && (!nickname || nameKey(row.nickname) !== nameKey(nickname))).length + 1;
   }
   const scores = await fetchTopScores({ mode: todayOnly ? 'today' : 'all', limit: Number.MAX_SAFE_INTEGER });
-  const higherScores = scores.filter(s => s.score > score);
+  const ownBest = nickname ? scores.find(row => nameKey(row.nickname) === nameKey(nickname))?.score || score : score;
+  const higherScores = scores.filter(s => s.score > ownBest && (!nickname || nameKey(s.nickname) !== nameKey(nickname)));
   return higherScores.length + 1;
 }
 

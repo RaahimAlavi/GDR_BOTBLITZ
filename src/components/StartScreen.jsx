@@ -1,25 +1,42 @@
 import { useState } from 'react';
-import { ArrowUpRight, Dice5, Heart, Play, RotateCw, Trophy, Zap } from 'lucide-react';
+import { ArrowUpRight, Heart, Play, RotateCw, Trophy, Zap } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { sanitizeNickname, generateRandomNickname } from '../lib/profanityFilter';
-import { readPreference, writePreference } from '../lib/storage';
+import { sanitizeNickname } from '../lib/profanityFilter';
+import { getNameProfile, initialPlayerName } from '../lib/playerNames';
+import { writePreference } from '../lib/storage';
+import { readPlayerBest } from '../lib/playerBests';
 import { sound } from '../lib/soundFx';
 import Brand from './Brand';
 import RobotArt from './RobotArt';
 import SoundToggle from './SoundToggle';
 import ScoreSyncNotice from './ScoreSyncNotice';
+import { getScoreTarget } from '../lib/scoreOutbox';
 
 export default function StartScreen({ onStartGame }) {
-  const [nickname, setNickname] = useState(() => readPreference('botblitz_player_name'));
+  const [nickname, setNickname] = useState(initialPlayerName);
   const [error, setError] = useState('');
-  const best = Number(readPreference('botblitz_personal_best', '0')) || 0;
-  function start(event) {
+  const [checking, setChecking] = useState(false);
+  const [readyName, setReadyName] = useState(() => {
+    const name = initialPlayerName(), profile = getNameProfile(name);
+    return profile?.confirmed && (profile.reserved || getScoreTarget() === 'demo' || navigator.onLine === false) ? name : '';
+  });
+  const best = readPlayerBest(nickname);
+  async function start(event) {
     event.preventDefault();
-    const validation = sanitizeNickname(nickname || generateRandomNickname());
+    if (checking) return;
+    const validation = sanitizeNickname(nickname);
     if (!validation.isValid) { setError(validation.error); return; }
-    writePreference('botblitz_player_name', validation.sanitizedName);
-    sound.init();
-    onStartGame(validation.sanitizedName);
+    if (readyName === validation.sanitizedName) {
+      writePreference('botblitz_player_name', readyName);
+      sound.init(); onStartGame(readyName); return;
+    }
+    setChecking(true); setError('');
+    try {
+      const service = await import('../lib/supabase');
+      const profile = await service.checkPlayerName(validation.sanitizedName);
+      setNickname(profile.nickname); setReadyName(profile.nickname);
+    } catch (err) {setError(err.message);}
+    finally {setChecking(false);}
   }
   return <div className="arcade-shell">
     <header className="site-header"><Brand />
@@ -39,13 +56,13 @@ export default function StartScreen({ onStartGame }) {
         <p className="muted">Collect energy. Dodge the red stuff.<br />Keep your little bot alive.</p>
         <div className="game-facts"><span><Zap size={17} />60 seconds</span><span><Heart size={17} />3 lives</span><span><Trophy size={17} />5× combos</span></div>
         <form onSubmit={start}>
-          <label htmlFor="nickname">YOUR PLAYER NAME <span>Optional</span></label>
+          <label htmlFor="nickname">YOUR PLAYER NAME <span>Required</span></label>
           <div className={error ? 'name-field has-error' : 'name-field'}>
-            <input id="nickname" maxLength={16} value={nickname} onChange={e => {setNickname(e.target.value); setError('');}} placeholder="Choose a name" autoComplete="nickname" autoCapitalize="off" spellCheck={false} aria-invalid={Boolean(error)} aria-describedby={error ? 'name-error' : undefined} />
-            <button type="button" className="icon-button" aria-label="Generate random name" onClick={() => {setNickname(generateRandomNickname()); setError('');}}><Dice5 size={20} /></button>
+            <input id="nickname" maxLength={16} value={nickname} disabled={checking} onChange={e => {setNickname(e.target.value); setReadyName(''); setError('');}} placeholder="Your name + initials" autoComplete="nickname" autoCapitalize="off" spellCheck={false} aria-invalid={Boolean(error)} aria-describedby={error ? 'name-error' : 'name-help'} />
           </div>
           {error && <p id="name-error" className="form-error" role="alert">{error}</p>}
-          <button className="primary-button play-button" type="submit"><Play size={21} fill="currentColor" /> LET'S BLITZ <ArrowUpRight size={21} /></button>
+          <p id="name-help" className={'name-help ' + (readyName ? 'ready' : '')} role="status">{readyName ? 'Name ready. Tap Play to begin.' : 'Choose a unique name. Replays keep your best score.'}</p>
+          <button className="primary-button play-button" type="submit" disabled={checking}><Play size={21} fill="currentColor" /> {checking ? 'CHECKING NAME…' : readyName ? "LET'S BLITZ" : 'CHECK NAME'} <ArrowUpRight size={21} /></button>
         </form>
         <div className="rotate-tip"><RotateCw size={17} /><span>Best played sideways. Fullscreen on Play.</span></div>
         <details className="how-to-play"><summary>How to play <span>+</span></summary><p>Drag anywhere to steer. Your bot follows your movement, so your finger stays out of the way. Collect green batteries and blue or gold cores. Chain pickups for up to 5× points. Red hazards cost a heart; a shield absorbs one hit. Survive 60 seconds or play until all three hearts are gone. On a keyboard, use WASD or the arrow keys.</p></details>
