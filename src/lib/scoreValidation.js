@@ -1,4 +1,5 @@
 /** Client consistency checks. Competitive anti-cheat requires a trusted server. */
+import {MAX_SCORE} from './scoreLimits.js';
 export function createGameSession(nickname) {
   return {
     sessionId: crypto.randomUUID(), nickname, startTime: null, endTime: null,
@@ -31,7 +32,7 @@ export function validateSessionScore(session, reportedScore) {
     session.events.filter(event => event.type === 'HAZARD_HIT').length === 3;
   const timerFinished = session.endReason === 'TIME' && duration >= 59.5;
   if (duration < 0 || (!livesLost && !timerFinished)) return invalid('The run ended before the timer or the third hit.');
-  if (!Number.isSafeInteger(reportedScore) || reportedScore < 0 || reportedScore > 60000 || reportedScore !== session.accumulatedScore) {
+  if (!Number.isSafeInteger(reportedScore) || reportedScore < 0 || reportedScore > MAX_SCORE || reportedScore !== session.accumulatedScore) {
     return invalid('The score does not match the run.');
   }
   return { isValid: true, validatedScore: reportedScore, duration: Math.min(60, Math.round(duration)) };

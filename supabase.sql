@@ -37,7 +37,7 @@ ON public.scores
 FOR INSERT
 WITH CHECK (
     score >= 0 AND 
-    score <= 60000 AND 
+    score <= 1000000 AND
     length(nickname) >= 1 AND 
     length(nickname) <= 16
 );

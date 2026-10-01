@@ -10,6 +10,7 @@ import { getScoreTarget, persistScore, readScoreJob, writeScoreJob, listScoreJob
 import { uploadQueuedScore } from './scoreUpload.js';
 import { preparePlayerName, nameKey } from './playerNames.js';
 import { bestScoresByName, fetchBestScores, kioskStats } from './leaderboardData.js';
+import {MAX_SCORE} from './scoreLimits.js';
 
 const SUPABASE_URL = import.meta.env?.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env?.VITE_SUPABASE_ANON_KEY;
@@ -143,7 +144,7 @@ export async function fetchKioskStats() {
 }
 
 export async function checkPlayerName(nickname) {
-  return preparePlayerName(nickname, {connected:!supabase || navigator.onLine !== false, claim:async candidate => {
+  const profile = await preparePlayerName(nickname, {connected:!supabase || navigator.onLine !== false, claim:async candidate => {
     const own = candidate.previous?.confirmed;
     if (!supabase) return {available:own || candidate.legacyOwner || !getLocalScores().some(row => nameKey(row.nickname) === nameKey(nickname)), nickname};
     const controller = new AbortController();
@@ -166,6 +167,10 @@ export async function checkPlayerName(nickname) {
       throw new Error('Could not check your name. Check your connection and try again.');
     } finally {clearTimeout(timer);}
   }});
+  // Name checking has already loaded the client. Prepare uploads now, before
+  // the first game, instead of relying on a later UI event to start the worker.
+  try {startScoreSync();} catch { /* Completed scores still persist before upload. */ }
+  return profile;
 }
 
 /**
@@ -201,7 +206,7 @@ export function startScoreSync() {
       try {
         const old = JSON.parse(localStorage.getItem(LOCAL_STORAGE_KEY) || '[]');
         for (const row of old) if (row.id?.startsWith('local_') && row.session_id &&
-          Number.isSafeInteger(row.score) && row.score >= 0 && row.score <= 60000 && row.nickname?.length <= 16) {
+          Number.isSafeInteger(row.score) && row.score >= 0 && row.score <= MAX_SCORE && row.nickname?.length <= 16) {
           persistScore({nickname:row.nickname, score:row.score, session_id:row.session_id,
             game_duration:row.game_duration ?? 60, created_at:row.created_at});
         }

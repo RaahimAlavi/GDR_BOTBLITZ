@@ -43,6 +43,8 @@ Use `supabase.sql` to set up the scores table, read/insert policies, indexes, an
 
 For name reservations, apply `supabase-name-reservations.sql` once in the existing database. Until it is applied, name checks use run history and cannot prevent simultaneous first-time claims of an unused name. The migration adds a private registry and token-checked submissions without deleting runs. See [player name behavior and migration](docs/PLAYER_NAMES.md).
 
+For existing databases with the old 60,000-point limit, apply `supabase-score-limit.sql`. Legitimate combos can exceed that limit. Client checks, fresh setup policies and named uploads now allow consistent scores up to 1,000,000; the migration preserves history. Until the server is updated, new high scores remain on the device and retry rather than disappearing. See [first-run saving and verification](docs/FIRST_RUN_SCORES.md).
+
 With no configured backend, demo mode stores scores in the same browser origin and updates other tabs through storage events. Demo scores on different phones are independent.
 
 Each completed run is written to a durable, per-run device queue **before** the results screen or any network request. The results screen is included in the main bundle and displays “Saved on this device. Will sync automatically when connected.” Pending uploads survive closing the tab and reopening the site.

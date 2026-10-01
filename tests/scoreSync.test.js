@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createScoreSync } from '../src/lib/scoreSync.js';
-import { persistScore, readScoreJob, listScoreJobs, scoreKey } from '../src/lib/scoreOutbox.js';
+import { persistScore, readScoreJob, listScoreJobs, scoreKey, SYNC_EVENT } from '../src/lib/scoreOutbox.js';
 import { uploadQueuedScore, stableScoreId } from '../src/lib/scoreUpload.js';
 
 const target='https://test.supabase.co';
@@ -30,6 +30,34 @@ test('a run is durable before any network call and reconnect uploads automatical
   assert.equal(queued.state,'pending');assert.equal(calls,0);assert.equal(f.job().payload.score,1500);
   f.online=true;f.events.dispatchEvent(new Event('online'));await f.sync.flush();
   assert.equal(calls,1);assert.equal(f.job().state,'synced');f.sync.stop();
+});
+
+test('a worker started during name checking uploads the first externally persisted game', async()=>{
+  let calls=0;
+  const f=fixture(async row=>{calls++;return {...row,id:row.session_id};},undefined,true);
+  f.sync.start();await f.sync.flush();
+  persistScore(payload,f.storage,target);
+  f.events.dispatchEvent(new Event(SYNC_EVENT));await f.sync.flush();
+  assert.equal(calls,1);assert.equal(f.job().state,'synced');
+  f.events.dispatchEvent(new Event(SYNC_EVENT));await f.sync.flush();
+  assert.equal(calls,1);f.sync.stop();
+});
+
+test('a new game persisted during another upload is scheduled without another game or reconnect',async()=>{
+  let release;
+  const seen=[];
+  const second={...payload,session_id:'cccccccc-cccc-4ccc-8ccc-cccccccccccc'};
+  const f=fixture(async row=>{
+    seen.push(row.session_id);
+    if(seen.length===1)await new Promise(resolve=>{release=resolve;});
+    return row;
+  },undefined,true);
+  f.sync.enqueue(payload);await settle();
+  persistScore(second,f.storage,target);
+  f.events.dispatchEvent(new Event(SYNC_EVENT));
+  release();await f.sync.flush();await f.advance(500);await f.sync.flush();
+  assert.deepEqual(seen,[payload.session_id,second.session_id]);
+  assert.equal(readScoreJob(second.session_id,f.storage,target).state,'synced');f.sync.stop();
 });
 test('reopening restores an unfinished upload and keeps the original completion date', async()=>{
   const first=fixture(async()=>{throw Error('offline');});
@@ -75,6 +103,20 @@ test('permanent rejection retains the run and requires an explicit retry', async
   assert.equal(f.job().state,'blocked');assert.equal(f.timers.size,0);
   await f.advance(60000);assert.equal(calls,1);
   rejected=false;await f.sync.retry(payload.session_id);assert.equal(f.job().state,'synced');f.sync.stop();
+});
+
+test('a high first score survives the old server limit and syncs after the policy is updated',async()=>{
+  let updated=false,calls=0;
+  const f=fixture(async row=>{
+    calls++;
+    if(!updated)throw Object.assign(Error('old score policy'),{status:403,code:'42501'});
+    return {...row,id:row.session_id};
+  },undefined,true);
+  f.sync.enqueue({...payload,score:90000});await f.sync.flush();
+  assert.equal(f.job().state,'pending');assert.equal(f.job().payload.score,90000);
+  assert.match(f.job().error,/score limit updated/);
+  updated=true;await f.advance(2000);await f.sync.flush();
+  assert.equal(calls,2);assert.equal(f.job().state,'synced');assert.equal(f.job().record.score,90000);f.sync.stop();
 });
 test('returning to a visible page retries pending runs', async()=>{
   const f=fixture(async row=>row);

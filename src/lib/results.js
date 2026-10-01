@@ -14,13 +14,13 @@ export function processResult(session, score) {
     }
     const job = persistCompletedScore(session, score);
     let saved = scoreJobStatus(job);
-    // The local confirmation is available without downloading a network client.
-    if (job.target === 'demo') {
-      try {
-        const service = await import('./supabase.js');
-        saved = await service.submitScore({nickname:session.nickname, score, sessionId:session.sessionId, gameDuration:validation.duration});
-      } catch { /* The durable demo run can be completed on the next visit. */ }
-    }
+    // Explicitly enqueue every completed run, including the first live result.
+    // The durable job already exists, so replaying this cannot duplicate it or
+    // lose its original timestamp/name token. Bootstrap still resumes old jobs.
+    try {
+      const service = await import('./supabase.js');
+      saved = await service.submitScore({nickname:session.nickname, score, sessionId:session.sessionId, gameDuration:validation.duration});
+    } catch { /* The local confirmation remains available while offline. */ }
     let rank = null;
     if (saved.sync === 'live' || saved.sync === 'demo') {
       try {const service = await import('./supabase.js'); rank = await service.calculatePlayerRank(score,true,session.nickname);} catch { /* Score saved, rank temporarily unavailable. */ }

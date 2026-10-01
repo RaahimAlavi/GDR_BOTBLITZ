@@ -121,6 +121,28 @@ test('short unfinished runs and invalid scores are rejected', () => {
   for (const score of [NaN,Infinity,-1,0.5,999]) assert.equal(validateSessionScore(session,score).isValid,false);
 });
 
+test('a legitimate first run above 60,000 points passes validation and is saved', async()=>{
+  const f=fixture();f.step(3000);
+  const core={type:'GOLDEN_CORE',points:1000,x:100,y:100,color:'#c4f979'};
+  for(let i=0;i<20;i++)f.engine.onCollectItem(core);
+  assert.equal(f.engine.score,90000);
+  f.step(60000);
+  assert.equal(validateSessionScore(f.session,f.engine.score).isValid,true);
+  const saved=await processResult(f.session,f.engine.score);
+  assert.equal(saved.record.score,90000);assert.equal(saved.sync,'demo');
+  const queued=JSON.parse([...memory.entries()].find(([key])=>key.endsWith(':'+f.session.sessionId))[1]);
+  assert.equal(queued.state,'synced');assert.equal(queued.payload.score,90000);
+});
+
+test('higher scores still reject mismatches and values over the shared ceiling',()=>{
+  const session=createGameSession('BOUNDS');
+  Object.assign(session,{startTime:2000000,endTime:2060000,isCompleted:true,endReason:'TIME',accumulatedScore:1000001});
+  assert.equal(validateSessionScore(session,1000001).isValid,false);
+  session.accumulatedScore=100000;
+  assert.equal(validateSessionScore(session,99999).isValid,false);
+  assert.equal(validateSessionScore(session,100000).isValid,true);
+});
+
 test('result replay shares one save and local notifications are delivered once', async () => {
   const f=fixture(); f.step(3000); f.step(60000);
   let notifications=0;

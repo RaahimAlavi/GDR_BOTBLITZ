@@ -62,7 +62,7 @@ test('invalid names, tokens and scores cannot pass the new database functions',a
   await assert.rejects(claim('Safe name','short'),/Invalid name/);
   const id=crypto.randomUUID();
   await assert.rejects(db.query('SELECT public.submit_named_score($1,$2::jsonb)',[tokenA,
-    JSON.stringify({id,session_id:id,nickname:'Ayesha A',score:999999,game_duration:60,created_at:new Date().toISOString()})]),/Invalid run/);
+    JSON.stringify({id,session_id:id,nickname:'Ayesha A',score:1000001,game_duration:60,created_at:new Date().toISOString()})]),/Invalid run/);
 });
 
 test('migration can be applied again without deleting history or changing ownership',async()=>{

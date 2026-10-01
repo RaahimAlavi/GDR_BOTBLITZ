@@ -64,7 +64,7 @@ BEGIN
     OR chosen.token_hash <> pg_catalog.sha256(pg_catalog.convert_to(p_token,'UTF8')) THEN
     RAISE EXCEPTION 'This name belongs to another player' USING ERRCODE = '42501';
   END IF;
-  IF run_session IS NULL OR run_session <> run_id::text OR run_score IS NULL OR run_score NOT BETWEEN 0 AND 60000
+  IF run_session IS NULL OR run_session <> run_id::text OR run_score IS NULL OR run_score NOT BETWEEN 0 AND 1000000
     OR run_duration IS NULL OR run_duration NOT BETWEEN 0 AND 60 OR completed IS NULL THEN
     RAISE EXCEPTION 'Invalid run' USING ERRCODE = '22023';
   END IF;

@@ -1,4 +1,5 @@
-import { listScoreJobs, persistScore, readScoreJob, writeScoreJob, scoreKey, OUTBOX_PREFIX } from './scoreOutbox.js';
+import { listScoreJobs, persistScore, readScoreJob, writeScoreJob, scoreKey, OUTBOX_PREFIX, SYNC_EVENT } from './scoreOutbox.js';
+import {MAX_SCORE, LEGACY_SCORE_LIMIT} from './scoreLimits.js';
 
 export function createScoreSync({storage, target, upload, events = window, visibility = document,
   online = () => navigator.onLine !== false, locks = navigator.locks,
@@ -33,12 +34,15 @@ export function createScoreSync({storage, target, upload, events = window, visib
       // Another tab may have confirmed this same run while our request failed.
       const current = readScoreJob(job.payload.session_id, storage, target);
       if (current?.state === 'synced') { emit(current); return; }
-      const blocked = (error.status >= 400 && error.status < 500 && ![408,429].includes(error.status)) ||
-        ['42501','23514','22P02'].includes(error.code);
+      const oldScoreLimit = job.payload.score > LEGACY_SCORE_LIMIT && job.payload.score <= MAX_SCORE &&
+        ((!job.payload.name_token && error.code === '42501') || error.code === '22023');
+      const blocked = !oldScoreLimit && ((error.status >= 400 && error.status < 500 && ![408,429].includes(error.status)) ||
+        ['42501','23514','22P02'].includes(error.code));
       const attempts = job.attempts + 1;
       const delay = Math.min(60000, 2000 * 2 ** Math.min(attempts - 1, 5)) * (1 + random() * .2);
       save({...job, state:blocked ? 'blocked' : 'pending', attempts,
-        retryAt:now() + delay, error:blocked ? 'The leaderboard rejected this upload. Your score is still on this device.' : null});
+        retryAt:now() + delay, error:oldScoreLimit ? 'Your score is saved on this device. The leaderboard needs its score limit updated.' :
+          blocked ? 'The leaderboard rejected this upload. Your score is still on this device.' : null});
     } finally { cancel(requestTimer); }
   }
   async function drain(force) {
@@ -65,6 +69,7 @@ export function createScoreSync({storage, target, upload, events = window, visib
     return running;
   }
   const wake = () => {void flush(true);};
+  const onQueueChange = () => {void flush();};
   const onVisibility = () => {if (visibility.visibilityState !== 'hidden') wake();};
   const onStorage = event => {
     if (!event.key?.startsWith(OUTBOX_PREFIX)) return;
@@ -76,6 +81,7 @@ export function createScoreSync({storage, target, upload, events = window, visib
     const firstStart = !started;
     if (!started) {
       started = true; events.addEventListener('online', wake); events.addEventListener('pageshow', wake);
+      events.addEventListener(SYNC_EVENT, onQueueChange);
       events.addEventListener('storage', onStorage); visibility.addEventListener('visibilitychange', onVisibility);
     }
     void flush(firstStart);
@@ -94,6 +100,7 @@ export function createScoreSync({storage, target, upload, events = window, visib
   function stop() {
     disposed = true; started = false; cancel(timer);
     events.removeEventListener('online', wake); events.removeEventListener('pageshow', wake);
+    events.removeEventListener(SYNC_EVENT, onQueueChange);
     events.removeEventListener('storage', onStorage); visibility.removeEventListener('visibilitychange', onVisibility);
   }
   return {start, enqueue, retry, flush, stop, subscribe:listener => {listeners.add(listener); return () => listeners.delete(listener);}};
